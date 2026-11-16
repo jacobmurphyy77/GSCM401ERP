@@ -500,29 +500,42 @@ update public.inventory inv set on_hand=greatest(inv.on_hand-sold.quantity,0),up
 from sold where inv.item_id=sold.item_id and inv.location_id=sold.location_id;
 
 create view public.mrp_four_weeks with (security_invoker = true) as
-select o.id order_id,o.order_number,o.requested_at::date requirement_date,
-       parent.id parent_item_id,parent.name parent_item,
-       child.id component_item_id,child.name component_item,child.sku,
-       sum(sol.quantity*b.quantity_per)::integer gross_requirement,
-       child.lead_time_days,
-       coalesce(inv.on_hand,0) on_hand,
-       coalesce(po.open_quantity,0) open_purchase_quantity,
-       greatest(sum(sol.quantity*b.quantity_per)-coalesce(inv.on_hand,0)-coalesce(po.open_quantity,0),0)::integer suggested_order_quantity,
-       o.requested_at::date-child.lead_time_days order_by_date,
-       o.location_id
-from public.sales_orders o
-join public.sales_order_lines sol on sol.order_id=o.id
-join public.items parent on parent.id=sol.item_id
-join public.bom_lines b on b.parent_item_id=parent.id
-join public.items child on child.id=b.component_item_id
-left join public.inventory inv on inv.item_id=child.id and inv.location_id=o.location_id
-left join lateral (
-  select sum(pol.quantity_ordered-pol.quantity_received) open_quantity
-  from public.purchase_order_lines pol join public.purchase_orders po on po.id=pol.purchase_order_id
-  where pol.item_id=child.id and po.location_id=o.location_id and po.status in ('sent','partially_received')
-) po on true
-where o.status in ('placed','confirmed') and o.requested_at < now()+interval '28 days'
-group by o.id,o.order_number,o.requested_at,parent.id,parent.name,child.id,child.name,child.sku,child.lead_time_days,inv.on_hand,po.open_quantity,o.location_id;
+with demand as (
+  select o.location_id,date_trunc('week',o.requested_at)::date week_start,b.component_item_id,
+         string_agg(distinct parent.name,', ' order by parent.name) parent_item,
+         sum(sol.quantity*b.quantity_per)::integer gross_requirement
+  from public.sales_orders o
+  join public.sales_order_lines sol on sol.order_id=o.id
+  join public.items parent on parent.id=sol.item_id
+  join public.bom_lines b on b.parent_item_id=parent.id
+  where o.status in ('placed','confirmed')
+    and o.requested_at >= date_trunc('week',now())
+    and o.requested_at < date_trunc('week',now())+interval '4 weeks'
+  group by o.location_id,date_trunc('week',o.requested_at)::date,b.component_item_id
+), scheduled as (
+  select d.*,child.id component_item_id,child.name component_item,child.sku,child.lead_time_days,
+         coalesce(inv.on_hand,0)::integer on_hand,
+         coalesce(po.open_quantity,0)::integer open_purchase_quantity,
+         coalesce(sum(d.gross_requirement) over (partition by d.location_id,d.component_item_id order by d.week_start rows between unbounded preceding and current row),0)::integer cumulative_requirement
+  from demand d
+  join public.items child on child.id=d.component_item_id
+  left join public.inventory inv on inv.item_id=child.id and inv.location_id=d.location_id
+  left join lateral (
+    select sum(pol.quantity_ordered-pol.quantity_received)::integer open_quantity
+    from public.purchase_order_lines pol join public.purchase_orders po on po.id=pol.purchase_order_id
+    where pol.item_id=child.id and po.location_id=d.location_id and po.status in ('sent','partially_received')
+      and po.expected_at <= d.week_start+6
+  ) po on true
+)
+select s.location_id,l.name location_name,s.week_start requirement_date,s.parent_item,
+       s.component_item_id,s.component_item,s.sku,s.gross_requirement,s.lead_time_days,s.on_hand,s.open_purchase_quantity,
+       greatest(
+         greatest(s.cumulative_requirement-s.on_hand-s.open_purchase_quantity,0)-
+         greatest(coalesce(lag(s.cumulative_requirement-s.on_hand-s.open_purchase_quantity) over (partition by s.location_id,s.component_item_id order by s.week_start),0),0),
+         0
+       ) suggested_order_quantity,
+       s.week_start-s.lead_time_days order_by_date
+from scheduled s join public.locations l on l.id=s.location_id;
 
 grant select on public.inventory_turnover, public.mrp_four_weeks to authenticated;
 
@@ -671,6 +684,45 @@ begin
 end;
 $$;
 
+create function public.create_purchase_order(p_supplier_id uuid,p_location_id uuid,p_lines jsonb)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_po_id uuid:=gen_random_uuid(); v_lead integer; v_terms integer; v_amount numeric(12,2); v_line record; v_expected date;
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  if jsonb_typeof(p_lines)<>'array' or jsonb_array_length(p_lines)=0 then raise exception 'Add at least one PO line'; end if;
+  select quoted_lead_days,payment_terms_days into v_lead,v_terms from public.suppliers where id=p_supplier_id and active;
+  if not found then raise exception 'Choose an active supplier'; end if;
+  if not exists(select 1 from public.locations where id=p_location_id and active) then raise exception 'Choose an active location'; end if;
+  select sum(x.quantity*x.unit_cost) into v_amount from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer,unit_cost numeric);
+  if v_amount is null or v_amount<=0 then raise exception 'PO total must be greater than zero'; end if;
+  if exists(select 1 from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer,unit_cost numeric) where quantity<=0 or unit_cost<0) then raise exception 'PO quantities must be positive and costs cannot be negative'; end if;
+  v_expected:=current_date+v_lead;
+  insert into public.purchase_orders(id,supplier_id,location_id,status,ordered_at,expected_at,amount,created_by)
+    values(v_po_id,p_supplier_id,p_location_id,'sent',current_date,v_expected,v_amount,auth.uid());
+  for v_line in select * from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer,unit_cost numeric) loop
+    if not exists(select 1 from public.items where id=v_line.item_id and active) then raise exception 'PO item is unavailable'; end if;
+    insert into public.purchase_order_lines(purchase_order_id,item_id,quantity_ordered,unit_cost)
+      values(v_po_id,v_line.item_id,v_line.quantity,v_line.unit_cost);
+  end loop;
+  return v_po_id;
+end;
+$$;
+
+create function public.create_production_order(p_item_id uuid,p_location_id uuid,p_quantity integer)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_id uuid:=gen_random_uuid();
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  if p_quantity<=0 then raise exception 'Production quantity must be positive'; end if;
+  if not exists(select 1 from public.items where id=p_item_id and item_type='bike' and active) then raise exception 'Choose an active bike'; end if;
+  if not exists(select 1 from public.bom_lines where parent_item_id=p_item_id) then raise exception 'Bike has no bill of materials'; end if;
+  if not exists(select 1 from public.locations where id=p_location_id and location_type='warehouse' and active) then raise exception 'Choose an active warehouse'; end if;
+  insert into public.production_orders(id,item_id,location_id,quantity_started,status,created_by)
+    values(v_id,p_item_id,p_location_id,p_quantity,'released',auth.uid());
+  return v_id;
+end;
+$$;
+
 create function public.complete_production_order(p_work_order_id uuid,p_good integer,p_scrapped integer,p_quality_reason text default null)
 returns numeric(12,2) language plpgsql security definer set search_path = '' as $$
 declare v_work public.production_orders%rowtype; v_bom record; v_cost numeric(12,2):=0; v_component_cost numeric(12,2);
@@ -710,8 +762,10 @@ $$;
 revoke all on function public.adjust_inventory(uuid,uuid,integer,text) from public,anon;
 revoke all on function public.transfer_inventory(uuid,uuid,uuid,integer) from public,anon;
 revoke all on function public.receive_purchase_order(uuid,uuid,integer) from public,anon;
+revoke all on function public.create_purchase_order(uuid,uuid,jsonb) from public,anon;
+revoke all on function public.create_production_order(uuid,uuid,integer) from public,anon;
 revoke all on function public.complete_production_order(uuid,integer,integer,text) from public,anon;
-grant execute on function public.adjust_inventory(uuid,uuid,integer,text), public.transfer_inventory(uuid,uuid,uuid,integer), public.receive_purchase_order(uuid,uuid,integer), public.complete_production_order(uuid,integer,integer,text) to authenticated;
+grant execute on function public.adjust_inventory(uuid,uuid,integer,text), public.transfer_inventory(uuid,uuid,uuid,integer), public.receive_purchase_order(uuid,uuid,integer), public.create_purchase_order(uuid,uuid,jsonb), public.create_production_order(uuid,uuid,integer), public.complete_production_order(uuid,integer,integer,text) to authenticated;
 
 create function public.process_return(
   p_order_id uuid,p_item_id uuid,p_location_id uuid,p_quantity integer,p_reason_code text,p_disposition text
@@ -744,3 +798,35 @@ end;
 $$;
 revoke all on function public.process_return(uuid,uuid,uuid,integer,text,text) from public,anon;
 grant execute on function public.process_return(uuid,uuid,uuid,integer,text,text) to authenticated;
+
+create function public.create_demo_shipment(p_order_id uuid)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_id uuid:=gen_random_uuid(); v_order public.sales_orders%rowtype;
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  select * into v_order from public.sales_orders where id=p_order_id for update;
+  if not found or v_order.status in ('cancelled','closed') then raise exception 'Choose an open order to ship'; end if;
+  if exists(select 1 from public.shipments where order_id=p_order_id) then raise exception 'This order already has a shipment'; end if;
+  insert into public.shipments(id,order_id,status,tracking_code,estimated_at)
+    values(v_id,p_order_id,'processing','WCW-'||v_order.order_number::text,now()+interval '3 days');
+  insert into public.shipment_events(shipment_id,status,note) values(v_id,'processing','Shipment created at Wasatch Cycle Works');
+  return v_id;
+end;
+$$;
+
+create function public.update_demo_shipment(p_shipment_id uuid,p_status public.shipment_status,p_note text default null)
+returns public.shipment_status language plpgsql security definer set search_path = '' as $$
+declare v_current public.shipment_status;
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  if nullif(trim(p_note),'') is null then raise exception 'Add a shipment update note'; end if;
+  select status into v_current from public.shipments where id=p_shipment_id for update;
+  if not found then raise exception 'Shipment not found'; end if;
+  update public.shipments set status=p_status,updated_at=now() where id=p_shipment_id;
+  insert into public.shipment_events(shipment_id,status,note) values(p_shipment_id,p_status,trim(p_note));
+  return p_status;
+end;
+$$;
+revoke all on function public.create_demo_shipment(uuid) from public,anon;
+revoke all on function public.update_demo_shipment(uuid,public.shipment_status,text) from public,anon;
+grant execute on function public.create_demo_shipment(uuid), public.update_demo_shipment(uuid,public.shipment_status,text) to authenticated;

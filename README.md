@@ -20,10 +20,10 @@ update public.profiles set role = 'manager' where id = '<auth-user-id>';
 
 ## Current scope
 
-The app includes authentication, a responsive operations shell, a POS flow with barcode input and a first-order discount, shared inventory/order/report views, and realtime refresh subscriptions. The database migration defines inventory, purchasing, production, MRP, supplier, shipment, finance, and return structures.
+Staff workflows include POS checkout, barcode input for a USB scanner, inventory adjustments and transfers, returns, purchase orders and receipts, production orders, four-week MRP, financial and supplier reports, and in-app shipment status timelines. The database is the source of truth for the displayed totals, generated six-month sales history, inventory, and operations records. Realtime subscriptions refresh shared inventory, orders, and shipment updates.
 
-Payment processing, confirmation email delivery, customer online checkout, barcode camera scanning, returns/exchanges, and write forms for production and purchasing still need provider credentials and application workflows before the system is ready for the class demo. No customer service-role key belongs in the app.
+This is still a demo foundation, not a completed live commerce deployment. Customer online ordering with card payment and automatic confirmation email are not implemented yet. Those require a checkout/email integration and provider credentials; the chosen shipment tracking is simulated in-app, not connected to a carrier. Barcode input supports a USB scanner that types into the POS field; camera scanning is not included. Do not use the seeded demo history or city-level tax rates as production business records or tax advice.
 
 ## Hosting and services
 
-The GitHub repo is the source record. Supabase stores authentication and ERP data. Sites is the requested app host. A publishable key is public by design but is kept in `.env.local` for local work and in the host’s runtime/build configuration for deployment. Never use a Supabase secret/service-role key in browser code or GitHub.
+The GitHub repo is the source record. Supabase stores authentication and ERP data. Sites is the requested app host. Apply the migration before creating the first staff account, then promote that account with the SQL above. A publishable key is public by design and belongs in `.env.local` for local work and in the host’s environment configuration for deployment. Never use a Supabase secret/service-role key in browser code or GitHub.
