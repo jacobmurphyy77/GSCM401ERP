@@ -44,12 +44,9 @@ The provider code needs to be deployed and configured before online payment or e
 
 ### Payment and email setup
 
-1. Create Stripe test-mode credentials and a Resend account with a verified sender address.
-2. Apply the database migration, then deploy `create-checkout-session`, `cancel-checkout-session`, and `stripe-webhook` using the Supabase CLI or dashboard function editor. The included `supabase/config.toml` keeps customer functions authenticated and allows Stripe's signed webhook request through.
-3. Add these Supabase Edge Function secrets: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `ORDERS_FROM_EMAIL`, and `APP_URL`. `APP_URL` is the published GitHub Pages address, including `/GSCM401ERP` and without a trailing slash.
-4. In Stripe, add a webhook endpoint at `https://skfmrqrsmnsmoniyuzdq.supabase.co/functions/v1/stripe-webhook` for `checkout.session.completed` and `checkout.session.expired`, then store its signing secret as `STRIPE_WEBHOOK_SECRET`.
+Follow [the Stripe sandbox setup guide](docs/STRIPE-DEMO-SETUP.md) for the exact secret names, payment migration, four dashboard-ready Edge Functions, webhook events, and test cards. The payment code refuses live Stripe keys and verifies the stored amount/currency before confirming an order. A return URL alone cannot mark an order paid. Checkout retries reuse the existing order and Stripe session; duplicate webhooks post financial entries and the email outbox once.
 
-Keep all provider secrets in Supabase Edge Function secrets. The browser only uses the Supabase publishable key. An expired or cancelled Stripe checkout releases the associated inventory reservation; successful payment confirms the order and queues its confirmation email.
+Run `npm run prepare:stripe` to regenerate the single-file dashboard deployments after editing function source. Actual confirmation email delivery additionally requires a Resend sender and API key; missing configuration is recorded as an email failure, independently of successful payment.
 
 ## Hosting and services
 

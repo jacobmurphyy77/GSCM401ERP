@@ -1,5 +1,6 @@
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { validatePaidSession, requireSandboxKey } from "../_shared/payment-validation.ts";
 
 Deno.serve(async (request) => {
   if (request.method !== "POST") return new Response("POST required", { status: 405 });
@@ -13,6 +14,8 @@ Deno.serve(async (request) => {
     return new Response("Webhook is not configured", { status: 503 });
   }
 
+  try { requireSandboxKey(stripeSecret); }
+  catch { return new Response("Stripe sandbox key required", { status: 503 }); }
   const stripe = new Stripe(stripeSecret, { httpClient: Stripe.createFetchHttpClient() });
   let event: Stripe.Event;
   try {
@@ -27,11 +30,15 @@ Deno.serve(async (request) => {
     return new Response("Invalid Stripe signature", { status: 400 });
   }
 
+  if (event.livemode !== false) return new Response("Live payments are not enabled", { status: 400 });
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
   if (event.type === "checkout.session.expired") {
     const session = event.data.object as Stripe.Checkout.Session;
     const orderId = session.metadata?.order_id;
     if (orderId) {
+      const { data: order, error: orderError } = await admin.from("sales_orders").select("id,stripe_checkout_session_id").eq("id", orderId).maybeSingle();
+      if (orderError) return new Response("Could not load expired order", { status: 500 });
+      if (!order || (order.stripe_checkout_session_id && order.stripe_checkout_session_id !== session.id)) return new Response("Unlinked session", { status: 200 });
       const { error } = await admin.rpc("cancel_unpaid_order", { p_order_id: orderId });
       if (error) return new Response("Could not release expired order reservation", { status: 500 });
     }
@@ -43,11 +50,10 @@ Deno.serve(async (request) => {
   const orderId = session.metadata?.order_id;
   if (!orderId || session.payment_status !== "paid") return new Response("Checkout is not paid", { status: 400 });
 
-  const { error: paymentError } = await admin.rpc("complete_online_payment", {
-    p_order_id: orderId,
-    p_session_id: session.id,
-    p_payment_intent_id: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? "",
-  });
+  let payment;
+  try { payment = validatePaidSession(session); }
+  catch { return new Response("Invalid sandbox payment", { status: 400 }); }
+  const { error: paymentError } = await admin.rpc("confirm_test_checkout", payment);
   if (paymentError) return new Response("Could not confirm the paid order", { status: 500 });
 
   const { data: outbox, error: outboxError } = await admin.from("email_outbox")
@@ -71,27 +77,29 @@ Deno.serve(async (request) => {
     .single();
   if (!order) return new Response("Payment confirmed; order details unavailable", { status: 200 });
 
-  const customer = order.customers as { name?: string } | null;
+  const customer = order.customers as unknown as { name?: string } | null;
   const availability = order.estimated_available_at
     ? `Some or all items are on backorder. Estimated availability: ${new Date(order.estimated_available_at).toLocaleDateString("en-US", { timeZone: "UTC" })}.`
     : "Your items are reserved for pickup at your selected Wasatch Cycle Works store.";
   const emailResponse = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `order-confirmation-${outbox.id}` },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       from,
       to: [outbox.recipient],
       subject: `Order confirmation ${order.order_number} · Wasatch Cycle Works`,
-      text: `Hi ${customer?.name ?? "there"},\n\nYour payment was received for order ${order.order_number}.\nOrder total: $${Number(order.total).toFixed(2)}\n${availability}\n\nThank you,\nWasatch Cycle Works`,
+      text: `Hi ${customer?.name ?? "there"},\n\nYour demo payment was received for order ${order.order_number}. No real money was charged.\nOrder total: $${Number(order.total).toFixed(2)}\n${availability}\n\nThank you,\nWasatch Cycle Works`,
     }),
   });
   if (!emailResponse.ok) {
     const responseText = await emailResponse.text();
     await admin.from("email_outbox").update({ status: "failed", error_message: `Resend returned ${emailResponse.status}: ${responseText.slice(0, 400)}` }).eq("id", outbox.id);
-    return new Response("Payment confirmed; email delivery failed", { status: 200 });
+    return new Response("Payment confirmed; email delivery will be retried", { status: 500 });
   }
 
   const providerResult = await emailResponse.json();
-  await admin.from("email_outbox").update({ status: "sent", provider_message_id: providerResult.id, error_message: null }).eq("id", outbox.id);
+  const { error: sentError } = await admin.from("email_outbox").update({ status: "sent", provider_message_id: providerResult.id, error_message: null }).eq("id", outbox.id);
+  if (sentError) return new Response("Email status could not be saved", { status: 500 });
   return new Response("ok", { status: 200 });
 });

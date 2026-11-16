@@ -17,7 +17,7 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
   return <>
     <Modal title="Your bag" open={cartOpen} onClose={() => setCartOpen(false)} drawer>
       {!totals.rows.length ? <div className="store-empty"><Icon name="bag" size={36}/><h3>A little room for adventure.</h3><p>Your bag is empty. Let’s find your next ride.</p><button className="store-button" onClick={() => { setCartOpen(false); document.getElementById("bikes")?.scrollIntoView({ behavior: "smooth" }); }}>Explore the bikes <Icon name="arrow"/></button></div> : <>
-        <p className="cart-intro">{totals.units} {totals.units === 1 ? "bike" : "bikes"} · Pickup at your selected store</p>
+        <p className="cart-intro">{totals.units} {totals.units === 1 ? "item" : "items"} · Pickup at your selected store</p>
         <div className="retail-cart-items">{totals.rows.map((item) => <div className="retail-cart-item" key={item.id}>
           <Image src={assetPath(productPresentation(item).image)} alt="" width={160} height={110} unoptimized/>
           <div><h3>{item.name}</h3><p>{money(item.sale_price)}</p><div className="quantity-stepper"><button aria-label={`Remove one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] - 1)}>−</button><span>{cart[item.id]}</span><button aria-label={`Add one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] + 1)}>+</button></div></div>
@@ -29,6 +29,7 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
         <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(totals.subtotal)}</dd></div>{totals.discount > 0 && <div className="discount-total"><dt>Discount</dt><dd>−{money(totals.discount)}</dd></div>}<div><dt>Sales tax · {(Number(store?.tax_rate ?? 0) * 100).toFixed(2)}%</dt><dd>{money(totals.tax)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(totals.total)}</dd></div></dl>
         {cartMessage && <p className="store-message" role="status">{cartMessage}</p>}
         <button className="store-button checkout-button" disabled={busy || catalogError || !authReady} onClick={() => void shop.checkout()}>{busy ? "Opening secure payment…" : session ? "Continue to secure payment" : "Sign in to checkout"}<Icon name="arrow"/></button>
+        <p className="cart-fineprint"><strong>Stripe sandbox demo.</strong> No real charges. Use test card 4242 4242 4242 4242, any future expiry, and any three-digit CVC.</p>
         <p className="cart-fineprint">Your total is validated at checkout. Backordered items display an estimated availability date in your order.</p>
       </>}
     </Modal>
@@ -51,7 +52,7 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
         {isEmployeeRole(role) && <Link className="workspace-shortcut" href="/employee">Open employee workspace <Icon name="arrow" size={18}/></Link>}
         {accountError && <p className="store-message error" role="alert">{accountError}</p>}
         <div className="account-orders-heading"><h3>Your orders</h3><button onClick={() => void shop.loadAccount(session.user.id)} disabled={accountLoading}>{accountLoading ? "Refreshing…" : "Refresh orders"}</button></div>
-        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order) => <OrderDetails key={order.id} order={order}/>)}</div>}
+        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order) => <OrderDetails key={order.id} order={order} busy={busy} onResume={() => void shop.resumeOrder(order)}/>)}</div>}
       </>}
     </Modal>
 
@@ -61,9 +62,10 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
   </>;
 }
 
-function OrderDetails({ order }: { order: CustomerOrder }) {
+function OrderDetails({ order, busy, onResume }: { order: CustomerOrder; busy: boolean; onResume: () => void }) {
   const shipments = !order.shipments ? [] : Array.isArray(order.shipments) ? order.shipments : [order.shipments];
-  return <details className="customer-order"><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><p>Payment: <strong>{statusText(order.payment_status)}</strong></p>{order.estimated_available_at && <p>Estimated availability: <strong>{dateText(order.estimated_available_at)}</strong></p>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>Quantity {line.quantity}</span></li>)}</ul>
+  return <details className="customer-order"><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && order.checkout_request_id && <p><button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button></p>}{order.estimated_available_at && <p>Estimated availability: <strong>{dateText(order.estimated_available_at)}</strong></p>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
+    <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(order.subtotal)}</dd></div>{Number(order.discount_amount) > 0 && <div><dt>Discount</dt><dd>−{money(order.discount_amount)}</dd></div>}<div><dt>Sales tax</dt><dd>{money(order.tax_amount)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(order.total)}</dd></div></dl>
     {shipments.length ? shipments.map((shipment) => <section className="customer-tracking" key={shipment.id}><div><Icon name="box"/><h4>{shipment.tracking_code}</h4><span>{statusText(shipment.status)}</span></div>{shipment.estimated_at && <p>Estimated update: {dateText(shipment.estimated_at)}</p>}<ol>{[...shipment.shipment_events].sort((a, b) => b.occurred_at.localeCompare(a.occurred_at)).map((event, index) => <li key={`${event.occurred_at}-${index}`}><strong>{statusText(event.status)}</strong><span>{event.note}</span><small>{new Date(event.occurred_at).toLocaleString()}</small></li>)}</ol></section>) : <p className="tracking-pending">Tracking updates will appear here when the store creates a fulfillment record.</p>}
   </div></details>;
 }

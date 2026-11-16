@@ -1,42 +1,24 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { confirmPayment, corsHeaders, customerContext, json, stripeRequest } from "../_shared/checkout.ts";
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (request.method !== "POST") return Response.json({ error: "POST required" }, { status: 405, headers: corsHeaders });
-  const authorization = request.headers.get("Authorization");
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const stripeSecret = Deno.env.get("STRIPE_SECRET_KEY");
-  if (!authorization || !supabaseUrl || !anonKey || !stripeSecret) {
-    return Response.json({ error: "Checkout cancellation is not configured." }, { status: 503, headers: corsHeaders });
-  }
-  const supabase = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authorization } } });
-  const { data: userResult } = await supabase.auth.getUser();
-  if (!userResult.user) return Response.json({ error: "Sign in to cancel checkout." }, { status: 401, headers: corsHeaders });
-  let body: { order_id?: string; session_id?: string };
-  try { body = await request.json(); }
-  catch { return Response.json({ error: "Invalid cancellation request." }, { status: 400, headers: corsHeaders }); }
-  if (!body.order_id || !body.session_id) return Response.json({ error: "Order and session are required." }, { status: 400, headers: corsHeaders });
-
-  const { data: order, error: orderError } = await supabase.from("sales_orders")
-    .select("id,stripe_checkout_session_id,payment_status")
-    .eq("id", body.order_id)
-    .single();
-  if (orderError || !order || order.stripe_checkout_session_id !== body.session_id || order.payment_status !== "unpaid") {
-    return Response.json({ error: "Order does not match this active checkout." }, { status: 403, headers: corsHeaders });
-  }
-
-  const expireResponse = await fetch(`https://api.stripe.com/v1/checkout/sessions/${body.session_id}/expire`, {
-    method: "POST", headers: { Authorization: `Bearer ${stripeSecret}` },
-  });
-  if (!expireResponse.ok) return Response.json({ error: "Stripe could not expire this checkout session." }, { status: 409, headers: corsHeaders });
-  const { error: cancelError } = await supabase.rpc("cancel_unpaid_order", { p_order_id: body.order_id });
-  if (cancelError) return Response.json({ error: "Payment session expired, but stock reservation could not be released." }, { status: 500, headers: corsHeaders });
-  return Response.json({ cancelled: true }, { headers: corsHeaders });
+  if (request.method !== "POST") return json({ error: "POST required" }, 405);
+  try {
+    const { customer, admin, user, stripeSecret } = await customerContext(request);
+    const body = await request.json();
+    if (!body.order_id || !/^cs_test_[a-zA-Z0-9]+$/.test(body.session_id ?? "")) return json({ error: "Order and sandbox session are required." }, 400);
+    const { data: order } = await customer.from("sales_orders").select("id,stripe_checkout_session_id,created_by")
+      .eq("id", body.order_id).eq("created_by", user.id).single();
+    if (!order || order.stripe_checkout_session_id !== body.session_id) return json({ error: "Checkout does not belong to this account." }, 403);
+    let session = await stripeRequest(stripeSecret, `checkout/sessions/${body.session_id}`);
+    if (session.status === "open") session = await stripeRequest(stripeSecret, `checkout/sessions/${body.session_id}/expire`, new URLSearchParams());
+    if (session.status === "complete") {
+      await confirmPayment(admin, session);
+      return json({ paid: true });
+    }
+    if (session.status !== "expired") return json({ error: "Checkout is still active. Please refresh your orders." }, 409);
+    const { error } = await admin.rpc("cancel_unpaid_order", { p_order_id: order.id });
+    if (error) return json({ error: "Checkout expired; its reservation will need to be released." }, 500);
+    return json({ cancelled: true });
+  } catch (error) { return json({ error: error instanceof Error ? error.message : "Could not cancel checkout." }, 400); }
 });

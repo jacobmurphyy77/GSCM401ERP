@@ -1,15 +1,17 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/src/lib/supabase/client";
 import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock } from "@/src/lib/storefront";
 
+import { cartMatchesOrder, checkoutAttempt, checkoutFingerprint } from "@/src/lib/checkout";
+
 export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
 export type CustomerOrder = {
-  id: string; order_number: number; status: string; payment_status: string; total: number; requested_at: string;
-  estimated_available_at: string | null; shipments: Shipment | Shipment[] | null;
-  sales_order_lines: { item_id: string; quantity: number; items: { name: string } | null }[];
+  id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string;
+  estimated_available_at: string | null; location_id: string; discount_code: string | null; checkout_request_id: string | null; shipments: Shipment | Shipment[] | null;
+  sales_order_lines: { item_id: string; quantity: number; unit_price: number; items: { name: string } | null }[];
 };
 type Promotion = { code: string; percent_off: number; first_order_only: boolean };
 export const statusText = (value: string) => value.replaceAll("_", " ");
@@ -50,6 +52,13 @@ export function useStorefront() {
   const [authError, setAuthError] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const checkoutInProgress = useRef(false);
+  const pendingAttempt = useRef<string | null>(null);
+
+  function clearCheckoutAttempt() {
+    pendingAttempt.current = null;
+    try { localStorage.removeItem("wcw-checkout-attempt"); } catch { /* Storage is optional. */ }
+  }
 
   const refreshCatalog = useCallback(async () => {
     setCatalogLoading(true);
@@ -79,7 +88,7 @@ export function useStorefront() {
     setAccountLoading(true); setAccountError("");
     const [profile, customerOrders, paid] = await Promise.all([
       supabase.from("profiles").select("role").eq("id", userId).single(),
-      supabase.from("sales_orders").select("id,order_number,status,payment_status,total,requested_at,estimated_available_at,sales_order_lines(item_id,quantity,items(name)),shipments(id,status,tracking_code,estimated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
+      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,requested_at,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,items(name)),shipments(id,status,tracking_code,estimated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
       supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("created_by", userId).eq("payment_status", "paid"),
     ]);
     if (profile.data) setRole(String(profile.data.role));
@@ -124,18 +133,37 @@ export function useStorefront() {
     const checkout = query.get("checkout");
     if (!checkout) return;
     if (!session) { setNotice("Sign in to review your checkout and order status."); return; }
-    if (checkout === "success") { setCart({}); setAccountOpen(true); setNotice("Check My orders for the confirmed payment status of your checkout."); }
-    if (checkout === "cancelled") {
-      const orderId = query.get("order_id"); const sessionId = query.get("session_id");
-      setCartOpen(true); setCartMessage("Your bag has been saved.");
-      if (orderId && sessionId) void supabase.functions.invoke("cancel-checkout-session", { body: { order_id: orderId, session_id: sessionId } }).then(({ error }) => {
-        setCartMessage(error ? "Your bag is saved. Any unpaid reservation will clear when checkout expires." : "Checkout cancelled and reserved stock released. Your bag is still here.");
-        void refreshCatalog();
-      });
+    let active = true;
+    const sessionId = query.get("session_id");
+    function cleanReturnUrl() {
+      query.delete("checkout"); query.delete("order"); query.delete("order_id"); query.delete("session_id");
+      window.history.replaceState({}, "", `${window.location.pathname}${query.size ? `?${query.toString()}` : ""}`);
     }
-    query.delete("checkout"); query.delete("order"); query.delete("order_id"); query.delete("session_id");
-    window.history.replaceState({}, "", `${window.location.pathname}${query.size ? `?${query.toString()}` : ""}`);
-    void loadAccount(session.user.id);
+    async function finishCheckout() {
+      if (checkout === "success") {
+        setAccountOpen(true); setNotice("Verifying your demo payment with Stripe…");
+        const { data, error } = await supabase.functions.invoke("verify-checkout-session", { body: { session_id: sessionId } });
+        if (!active) return;
+        if (!error && data?.paid) {
+          setCart((current) => cartMatchesOrder(current, data.lines ?? []) ? {} : current); clearCheckoutAttempt(); cleanReturnUrl();
+          setNotice(`Demo payment confirmed for order ${data.order_number}. No real money was charged.`);
+        } else setNotice("Payment is being verified. Check My orders or reload this page before attempting another payment.");
+      } else if (checkout === "cancelled") {
+        setCartOpen(true); setCartMessage("Checking your cancelled checkout…");
+        const { data, error } = await supabase.functions.invoke("cancel-checkout-session", { body: { order_id: query.get("order_id"), session_id: sessionId } });
+        if (!active) return;
+        if (!error && data?.paid) {
+          setCart({}); clearCheckoutAttempt(); setCartOpen(false); setAccountOpen(true);
+          setNotice("Your demo payment was already completed. View your confirmed order below."); cleanReturnUrl();
+        } else if (!error && data?.cancelled) {
+          clearCheckoutAttempt(); cleanReturnUrl();
+          setCartMessage("Checkout cancelled and reserved stock released. Your bag is still here.");
+        } else setCartMessage("Your bag is saved. We couldn’t confirm cancellation; refresh your orders before paying again.");
+      }
+      await loadAccount(session!.user.id); await refreshCatalog();
+    }
+    void finishCheckout().catch(() => { if (active) setNotice("We couldn’t verify checkout. Refresh your orders before paying again."); });
+    return () => { active = false; };
   }, [authReady, session, loadAccount, refreshCatalog, supabase]);
 
   const store = locations.find((location) => location.id === selectedLocation);
@@ -177,16 +205,47 @@ export function useStorefront() {
 
   async function checkout() {
     if (!session) { openAuth("checkout"); return; }
-    if (!store || !totals.rows.length || catalogError) { setCartMessage("Choose a pickup store and add a bike before checkout."); return; }
-    setBusy(true); setCartMessage("");
+    if (checkoutInProgress.current) return;
+    if (!store || !totals.rows.length || catalogError) { setCartMessage("Choose a pickup store and add a product before checkout."); return; }
+    checkoutInProgress.current = true; setBusy(true); setCartMessage("");
     try {
-      const { data, error } = await supabase.functions.invoke("create-checkout-session", { body: { location_id: store.id, lines: totals.rows.map((item) => ({ item_id: item.id, quantity: cart[item.id] })), discount_code: appliedCode && discountPercent ? appliedCode : null } });
-      if (error || !data?.url) { setCartMessage(data?.error ?? "Secure payment is not available yet. Your bag is saved—please try again later."); return; }
+      const lines = totals.rows.map((item) => ({ item_id: item.id, quantity: cart[item.id] }));
+      const code = appliedCode && discountPercent ? appliedCode : null;
+      let previous = pendingAttempt.current;
+      try { previous ??= localStorage.getItem("wcw-checkout-attempt"); } catch { /* Storage is optional. */ }
+      const attempt = checkoutAttempt(previous, checkoutFingerprint(session.user.id, store.id, lines, code), () => crypto.randomUUID());
+      pendingAttempt.current = JSON.stringify(attempt);
+      try { localStorage.setItem("wcw-checkout-attempt", pendingAttempt.current); } catch { /* Storage is optional. */ }
+      const { data, error } = await supabase.functions.invoke("create-checkout-session", { body: { request_id: attempt.requestId, location_id: store.id, lines, discount_code: code } });
+      let failure = data;
+      if (error?.context instanceof Response) { try { failure = await error.context.json(); } catch { /* Use fallback message. */ } }
+      if (error || !data?.url) {
+        if (failure?.reset_request) clearCheckoutAttempt();
+        setCartMessage(failure?.error ?? "Secure payment is not available yet. Your bag is saved—please try again later."); return;
+      }
       const destination = new URL(String(data.url));
-      if (destination.protocol !== "https:") { setCartMessage("We couldn’t open secure checkout. Please try again."); return; }
+      const isStripe = destination.hostname === "checkout.stripe.com";
+      const isReturn = destination.origin === window.location.origin && destination.pathname === window.location.pathname;
+      if (destination.protocol !== "https:" || (!isStripe && !isReturn)) { setCartMessage("We couldn’t open secure checkout. Please try again."); return; }
       window.location.assign(destination.href);
     } catch { setCartMessage("We couldn’t connect to payment. Your bag is still saved."); }
-    finally { setBusy(false); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
+  }
+
+  async function resumeOrder(order: CustomerOrder) {
+    if (!order.checkout_request_id || checkoutInProgress.current) return;
+    checkoutInProgress.current = true; setBusy(true); setAccountError("");
+    try {
+      const { data, error } = await supabase.functions.invoke("create-checkout-session", { body: {
+        request_id: order.checkout_request_id, location_id: order.location_id, discount_code: order.discount_code,
+        lines: order.sales_order_lines.map((line) => ({ item_id: line.item_id, quantity: line.quantity })),
+      } });
+      if (error || !data?.url) { setAccountError("This checkout could not be reopened. Refresh your orders and try again."); return; }
+      const destination = new URL(data.url);
+      if (destination.protocol !== "https:" || (destination.hostname !== "checkout.stripe.com" && !(destination.origin === window.location.origin && destination.pathname === window.location.pathname))) throw new Error("Invalid checkout URL");
+      window.location.assign(destination.href);
+    } catch { setAccountError("Couldn’t reconnect to Stripe. Please refresh your orders before paying again."); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
   }
 
   async function signOut() {
@@ -209,7 +268,7 @@ export function useStorefront() {
     cart, cartOpen, setCartOpen, discountCode, setDiscountCode, appliedCode, discountPercent, cartMessage, detail, setDetail, session, authReady, role,
     accountOpen, setAccountOpen, accountLoading, accountError, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
     setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, addToCart, changeQuantity,
-    openAuth, authenticate, applyDiscount, checkout, signOut, availability };
+    openAuth, authenticate, applyDiscount, checkout, resumeOrder, signOut, availability };
 }
 
 export type StorefrontModel = ReturnType<typeof useStorefront>;
