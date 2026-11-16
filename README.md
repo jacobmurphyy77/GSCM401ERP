@@ -18,11 +18,28 @@ New accounts are customer accounts. An administrator must assign staff roles in 
 update public.profiles set role = 'manager' where id = '<auth-user-id>';
 ```
 
+## ERP walkthrough notes
+
+- A paid pickup order reserves available stock. Unfilled quantities remain visible as a backorder with an estimated date; the order contributes component demand to the MRP view.
+- MRP groups confirmed demand into weekly component requirements from the bike bill of materials, subtracts on-hand inventory and open purchase quantities, and calculates the latest order date from the component lead time.
+- A purchase receipt updates inventory quantity and weighted average cost. Production issues BOM components and records good and scrapped output. Fulfillment reduces reserved and on-hand stock.
+- POS, returns, purchases, and production write operational and financial records used by the P&L, inventory valuation, turnover, and supplier scorecard views.
+- The application was built with OpenAI Codex; GitHub holds the source and Supabase holds authentication and ERP records.
+
 ## Current scope
 
-Staff workflows include POS checkout, barcode input for a USB scanner, inventory adjustments and transfers, returns, purchase orders and receipts, production orders, four-week MRP, financial and supplier reports, and in-app shipment status timelines. The database is the source of truth for the displayed totals, generated six-month sales history, inventory, and operations records. Realtime subscriptions refresh shared inventory, orders, and shipment updates.
+Staff workflows include POS checkout, barcode input for a USB scanner, inventory adjustments and transfers, returns, purchase orders and receipts, production orders, four-week MRP, financial and supplier reports, and in-app shipment status timelines. Customer accounts can browse pickup-store inventory, submit orders, and pay through Stripe Checkout. A Stripe webhook confirms paid orders and sends a confirmation email through Resend. The database is the source of truth for displayed totals, generated six-month sales history, inventory, and operations records. Realtime subscriptions refresh shared inventory, orders, and shipment updates.
 
-This is still a demo foundation, not a completed live commerce deployment. Customer online ordering with card payment and automatic confirmation email are not implemented yet. Those require a checkout/email integration and provider credentials; the chosen shipment tracking is simulated in-app, not connected to a carrier. Barcode input supports a USB scanner that types into the POS field; camera scanning is not included. Do not use the seeded demo history or city-level tax rates as production business records or tax advice.
+The provider code needs to be deployed and configured before online payment or email can work. Use Stripe test mode for class demos and a Resend verified sender. Stripe's test mode does not charge a card; live-mode processing may have fees. The chosen shipment tracking is simulated in-app, not connected to a carrier. Barcode input supports a USB scanner that types into the POS field; camera scanning is not included. Do not use the seeded demo history or city-level tax rates as production business records or tax advice.
+
+### Payment and email setup
+
+1. Create Stripe test-mode credentials and a Resend account with a verified sender address.
+2. Apply the database migration, then deploy `create-checkout-session`, `cancel-checkout-session`, and `stripe-webhook` using the Supabase CLI or dashboard function editor. The included `supabase/config.toml` keeps customer functions authenticated and allows Stripe's signed webhook request through.
+3. Add these Supabase Edge Function secrets: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `ORDERS_FROM_EMAIL`, and `APP_URL`. `APP_URL` is the published Sites address.
+4. In Stripe, add a webhook endpoint at `https://skfmrqrsmnsmoniyuzdq.supabase.co/functions/v1/stripe-webhook` for `checkout.session.completed` and `checkout.session.expired`, then store its signing secret as `STRIPE_WEBHOOK_SECRET`.
+
+Keep all provider secrets in Supabase Edge Function secrets. The browser only uses the Supabase publishable key. An expired or cancelled Stripe checkout releases the associated inventory reservation; successful payment confirms the order and queues its confirmation email.
 
 ## Hosting and services
 

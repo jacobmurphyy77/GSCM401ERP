@@ -81,7 +81,7 @@ export default function Home() {
       supabase.from("locations").select("id,name,city,location_type,tax_rate").eq("active", true).order("name"),
       supabase.from("customers").select("id,name,email").order("name"),
       supabase.from("inventory_by_location").select("*").order("location_name"),
-      supabase.from("sales_orders").select("id,order_number,status,total,discount_amount,tax_amount,requested_at,pickup,shipments(id,status,tracking_code,estimated_at),sales_order_lines(item_id,quantity,fulfilled_quantity,items(name))").order("created_at", { ascending: false }).limit(100),
+      supabase.from("sales_orders").select("id,order_number,status,payment_status,total,discount_amount,tax_amount,requested_at,estimated_available_at,pickup,shipments(id,status,tracking_code,estimated_at),sales_order_lines(item_id,quantity,fulfilled_quantity,items(name))").order("created_at", { ascending: false }).limit(100),
       supabase.from("mrp_four_weeks").select("*", { count: "exact" }).order("order_by_date"),
       supabase.from("profit_and_loss").select("*", { count: "exact" }).order("month", { ascending: false }).limit(12),
       supabase.from("inventory_turnover").select("*", { count: "exact" }),
@@ -155,6 +155,27 @@ export default function Home() {
     return () => { void supabase.removeChannel(channel); };
   }, [session, supabase, refresh]);
 
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const state = query.get("checkout");
+    const orderNumber = query.get("order");
+    if (state === "success") setNotice(`Payment completed for order ${orderNumber ?? ""}. Your confirmation email will follow.`);
+    if (state === "cancelled") {
+      setNotice(`Payment was cancelled for order ${orderNumber ?? ""}. Releasing the inventory reservation…`);
+      const orderId = query.get("order_id");
+      const sessionId = query.get("session_id");
+      if (orderId && sessionId) void supabase.functions.invoke("cancel-checkout-session", { body: { order_id: orderId, session_id: sessionId } }).then(({ error }) => {
+        setNotice(error ? "Checkout was cancelled. The reservation will clear when Stripe sends its expiration update." : "Checkout cancelled and reserved stock released.");
+        void refresh();
+      });
+    }
+    if (state) {
+      query.delete("checkout"); query.delete("order"); query.delete("order_id"); query.delete("session_id");
+      const queryString = query.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${queryString ? `?${queryString}` : ""}`);
+    }
+  }, [refresh, supabase]);
+
   async function authenticate(event: FormEvent) {
     event.preventDefault(); setBusy(true); setNotice("");
     const result = authMode === "login"
@@ -172,6 +193,20 @@ export default function Home() {
     setBusy(false);
     if (error) return setNotice(error.message);
     setCart({}); setDiscountCode(""); setNotice(`Sale ${data.order_number} recorded for ${money(data.total)}.`); await refresh();
+  }
+
+  async function checkoutOnline() {
+    if (!selectedLocation) return setNotice("Choose a pickup storefront first.");
+    const lines = Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([item_id, quantity]) => ({ item_id, quantity }));
+    if (!lines.length) return setNotice("Add a bike to your cart first.");
+    setBusy(true); setNotice("");
+    const { data, error } = await supabase.functions.invoke("create-checkout-session", {
+      body: { location_id: selectedLocation, lines, discount_code: discountCode || null },
+    });
+    setBusy(false);
+    if (error) return setNotice(error.message);
+    if (!data?.url) return setNotice(data?.error ?? "Secure checkout could not be started.");
+    window.location.assign(data.url as string);
   }
 
   async function scanBarcode(value: string) {
@@ -220,6 +255,11 @@ export default function Home() {
     setNotice(error?.message ?? `Return recorded. Refund: ${money(data.refund_amount)}.`); if (!error) await refresh();
   }
 
+  async function fulfillSalesOrder(orderId: string) {
+    const { error } = await supabase.rpc("fulfill_sales_order", { p_order_id: orderId });
+    setNotice(error?.message ?? "Paid order fulfilled and inventory decremented."); if (!error) await refresh();
+  }
+
   async function createShipment() {
     const { data, error } = await supabase.rpc("create_demo_shipment", { p_order_id: shipmentOrder });
     const order = orders.find((row) => row.id === shipmentOrder);
@@ -265,14 +305,20 @@ export default function Home() {
     <main className="erp-shell">
       <aside className="sidebar">
         <div className="brand-mark">W</div><div className="brand-copy"><strong>Wasatch Cycle Works</strong><span>Operations ERP</span></div>
-        <nav aria-label="ERP modules">{modules.map((entry) => <button key={entry.id} className={module === entry.id ? "nav-item selected" : "nav-item"} onClick={() => setModule(entry.id)}>{entry.label}</button>)}</nav>
+        {isStaff ? <nav aria-label="ERP modules">{modules.map((entry) => <button key={entry.id} className={module === entry.id ? "nav-item selected" : "nav-item"} onClick={() => setModule(entry.id)}>{entry.label}</button>)}</nav> : <div className="customer-nav">Customer pickup store</div>}
         <div className="side-user"><span className="avatar">{(profile?.display_name as string)?.slice(0,1)?.toUpperCase() || "U"}</span><div><strong>{profile?.display_name as string || session.user.email}</strong><span>{label(profile?.role)}</span></div></div>
         <button className="link-button" onClick={() => supabase.auth.signOut()}>Sign out</button>
       </aside>
       <section className="main-area">
-        <header className="topbar"><div><p className="eyebrow">{modules.find((entry) => entry.id === module)?.label}</p><h1>{module === "overview" ? "Good day, team" : modules.find((entry) => entry.id === module)?.label}</h1></div><div className="live-pill"><i /> Live data</div></header>
+        <header className="topbar"><div><p className="eyebrow">{isStaff ? modules.find((entry) => entry.id === module)?.label : "Customer store"}</p><h1>{isStaff ? (module === "overview" ? "Good day, team" : modules.find((entry) => entry.id === module)?.label) : "Shop bikes for pickup"}</h1></div><div className="live-pill"><i /> Live data</div></header>
         {notice && <div className="notice banner" role="status">{notice}<button onClick={() => setNotice("")}>Dismiss</button></div>}
-        {!isStaff ? <section className="panel"><h2>Customer account</h2><p>Your account is ready. A staff member must assign an operations role before you can access ERP modules.</p></section> : <>
+        {!isStaff ? <>
+          <div className="split-grid">
+            <section className="panel"><h2>Choose a bike</h2><p className="muted">Current pickup-store availability comes from live inventory. Backorders show an estimated lead-time date.</p><label>Pickup storefront<select value={selectedLocation} onChange={(e)=>setSelectedLocation(e.target.value)}>{locations.filter((location)=>location.location_type==="storefront").map((location)=><option key={location.id} value={location.id}>{location.name} · {(location.tax_rate*100).toFixed(2)}% tax</option>)}</select></label><div className="product-grid">{items.filter((item)=>item.item_type==="bike").map((item)=>{const available=Number(inventory.find((row)=>row.item_id===item.id&&row.location_id===selectedLocation)?.available??0);return <button className="product-card" key={item.id} onClick={()=>setCart((current)=>({...current,[item.id]:(current[item.id]??0)+1}))}><span>{item.name}</span><strong>{money(item.sale_price)}</strong><small>{available} available · {item.sku}</small></button>;})}</div></section>
+            <section className="panel"><h2>Your cart</h2>{cartRows.length?cartRows.map((item)=><div className="cart-row" key={item.id}><span>{item.name}<small>{money(item.sale_price)} each</small></span><div><button aria-label={`Remove one ${item.name}`} onClick={()=>setCart((current)=>({...current,[item.id]:Math.max(0,(current[item.id]??0)-1)}))}>−</button><b>{cart[item.id]}</b><button aria-label={`Add one ${item.name}`} onClick={()=>setCart((current)=>({...current,[item.id]:(current[item.id]??0)+1}))}>+</button></div></div>):<p className="muted">Add a bike to begin.</p>}<label>Discount code<input value={discountCode} onChange={(e)=>setDiscountCode(e.target.value.toUpperCase())} placeholder="WRIGHTISCOOL" /></label><div className="totals"><span>Subtotal</span><strong>{money(subtotal)}</strong><span>Discount</span><strong>−{money(discountPreview)}</strong><span>Sales tax</span><strong>{money((subtotal-discountPreview)*(store?.tax_rate??0))}</strong><span>Total</span><strong>{money(subtotal-discountPreview+(subtotal-discountPreview)*(store?.tax_rate??0))}</strong></div><button className="primary full" disabled={busy||!cartRows.length} onClick={checkoutOnline}>{busy?"Preparing secure checkout…":"Continue to secure payment"}</button><p className="footnote">{promoPercent}% first-order code · Confirmed orders receive an email after payment.</p></section>
+          </div>
+          <section className="panel"><h2>Your orders</h2><Rows rows={orders} columns={[["order_number","Order"],["status","Status"],["payment_status","Payment"],["total","Total"],["estimated_available_at","Estimated availability"]]} moneyColumns={["total"]} /></section>
+        </> : <>
           {module === "overview" && <>
             <div className="metric-grid">
               <Metric label="Revenue · 12 months" value={money(recentRevenue)} note="From posted financial entries" />
@@ -290,7 +336,7 @@ export default function Home() {
               <section className="panel"><h2>Location transfer</h2><p className="muted">Move stock while preserving its weighted average cost.</p><label>Item<select value={transferItem} onChange={(e)=>setTransferItem(e.target.value)}>{items.map((item)=><option key={item.id} value={item.id}>{item.name} · {item.sku}</option>)}</select></label><label>From<select value={transferFrom} onChange={(e)=>setTransferFrom(e.target.value)}>{locations.map((location)=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>To<select value={transferTo} onChange={(e)=>setTransferTo(e.target.value)}>{locations.map((location)=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Quantity<input type="number" min="1" value={transferQuantity} onChange={(e)=>setTransferQuantity(Number(e.target.value))} /></label><button className="primary" onClick={transferStock}>Post transfer</button></section>
             </div>
           </>}
-          {module === "orders" && <section className="panel"><h2>Sales orders</h2><p className="muted">POS sales and confirmed sales orders share this ledger.</p><Rows rows={orders} columns={[["order_number","Order"],["status","Status"],["requested_at","Placed"],["total","Total"],["pickup","Pickup"]]} moneyColumns={["total"]} /></section>}
+          {module === "orders" && <section className="panel"><h2>Sales orders</h2><p className="muted">Paid orders reserve stock; fulfillment reduces inventory and closes the handoff.</p><Rows rows={orders} columns={[["order_number","Order"],["status","Status"],["payment_status","Payment"],["requested_at","Placed"],["total","Total"],["estimated_available_at","Estimated availability"]]} moneyColumns={["total"]} />{orders.filter((order)=>order.status==="confirmed"&&order.payment_status==="paid").map((order)=><div className="record-row" key={String(order.id)}><div><strong>Order {String(order.order_number)}</strong><span>Ready to fulfill after confirming all items are available.</span></div><button className="secondary" onClick={()=>void fulfillSalesOrder(String(order.id))}>Fulfill order</button></div>)}</section>}
           {module === "returns" && <>
             <div className="split-grid"><section className="panel"><h2>Process return or exchange</h2><p className="muted">Select a fulfilled sale, returned item, disposition, and reason code.</p><label>Original order<select value={returnOrder} onChange={(e)=>{setReturnOrder(e.target.value);setReturnItem("");}}><option value="">Select an order</option>{fulfilledOrders.map((order)=><option key={String(order.id)} value={String(order.id)}>Order {String(order.order_number)} · {money(order.total)}</option>)}</select></label><label>Item<select value={returnItem} onChange={(e)=>setReturnItem(e.target.value)}><option value="">Select an item</option>{returnLines.map((line)=><option key={String(line.item_id)} value={String(line.item_id)}>{String((line.items as {name?:string}|null)?.name??itemName(line.item_id))} · sold {String(line.fulfilled_quantity??line.quantity)}</option>)}</select></label><label>Quantity<input type="number" min="1" value={returnQuantity} onChange={(e)=>setReturnQuantity(Number(e.target.value))} /></label><label>Reason code<input value={returnReason} onChange={(e)=>setReturnReason(e.target.value.toUpperCase().replaceAll(" ","_"))} /></label><label>Disposition<select value={returnDisposition} onChange={(e)=>setReturnDisposition(e.target.value)}><option value="restock">Restock</option><option value="quarantine">Quarantine</option><option value="scrap">Scrap</option><option value="exchange">Exchange</option></select></label><button className="primary" disabled={!returnOrder||!returnItem} onClick={processReturn}>Record return</button></section><section className="panel"><h2>Recent returns</h2><Rows rows={returns} columns={[["order_number","Order"],["item_name","Item"],["quantity","Qty"],["reason_code","Reason"],["disposition","Disposition"],["refund_amount","Refund"]]} moneyColumns={["refund_amount"]} /></section></div>
           </>}
@@ -309,7 +355,7 @@ export default function Home() {
             {shipments.length?shipments.map((shipment)=>{const events=(shipment.shipment_events as Row[]|undefined)??[];return <article className="panel shipment-card" key={String(shipment.id)}><div className="panel-heading"><div><p className="eyebrow">Order {String(shipment.order_number)}</p><h2>{String(shipment.tracking_code)} · {label(shipment.status)}</h2><p>Estimated delivery {shipment.estimated_at?new Date(String(shipment.estimated_at)).toLocaleDateString():"—"}</p></div><label>Advance status<select value={String(shipment.status)} onChange={(e)=>void updateShipment(String(shipment.id),e.target.value)}><option value="processing">Processing</option><option value="packed">Packed</option><option value="in_transit">In transit</option><option value="ready_for_pickup">Ready for pickup</option><option value="delivered">Delivered</option><option value="exception">Exception</option></select></label></div><label>Timeline note<input value={shipmentNote} onChange={(e)=>setShipmentNote(e.target.value)} placeholder="Optional note for this update" /></label><div className="shipment-timeline">{[...events].sort((a,b)=>String(b.occurred_at).localeCompare(String(a.occurred_at))).map((event,index)=><div key={`${String(event.occurred_at)}-${index}`}><i/><span><strong>{label(event.status)}</strong><small>{String(event.note)} · {new Date(String(event.occurred_at)).toLocaleString()}</small></span></div>)}</div></article>}):<div className="empty-state">No shipments yet. Create a demo tracking record from an open order.</div>}
           </>}
         </>}
-        <footer>Demo data · figures are computed from database records · {promoPercent}% first-order code: WRIGHTISCOOL</footer>
+        <footer>Demo data · figures are computed from database records · {promoPercent}% first-order code: WRIGHTISCOOL · Built with OpenAI Codex · GitHub source · Supabase data</footer>
       </section>
     </main>
   );

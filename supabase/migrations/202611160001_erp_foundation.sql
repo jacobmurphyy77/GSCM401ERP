@@ -146,6 +146,9 @@ create table public.sales_orders (
   pickup boolean not null default true,
   requested_at timestamptz not null default now(),
   fulfilled_at timestamptz,
+  estimated_available_at timestamptz,
+  stripe_checkout_session_id text unique,
+  stripe_payment_intent_id text,
   created_by uuid references auth.users(id),
   created_at timestamptz not null default now()
 );
@@ -157,6 +160,7 @@ create table public.sales_order_lines (
   quantity integer not null check (quantity > 0),
   unit_price numeric(12,2) not null check (unit_price >= 0),
   unit_cost numeric(12,2) not null check (unit_cost >= 0),
+  reserved_quantity integer not null default 0 check (reserved_quantity >= 0),
   fulfilled_quantity integer not null default 0 check (fulfilled_quantity >= 0)
 );
 
@@ -256,6 +260,18 @@ create table public.financial_entries (
 );
 create unique index financial_entries_reference_account_idx
   on public.financial_entries(reference_type, reference_id, account);
+
+do $$
+declare v_table text;
+begin
+  if exists(select 1 from pg_publication where pubname='supabase_realtime') then
+    foreach v_table in array array['inventory','sales_orders','shipment_events'] loop
+      if not exists(select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename=v_table) then
+        execute format('alter publication supabase_realtime add table public.%I',v_table);
+      end if;
+    end loop;
+  end if;
+end $$;
 
 create function public.is_staff() returns boolean
 language sql stable security definer set search_path = '' as $$
@@ -508,12 +524,12 @@ with demand as (
   join public.sales_order_lines sol on sol.order_id=o.id
   join public.items parent on parent.id=sol.item_id
   join public.bom_lines b on b.parent_item_id=parent.id
-  where o.status in ('placed','confirmed')
+  where o.status='confirmed'
     and o.requested_at >= date_trunc('week',now())
     and o.requested_at < date_trunc('week',now())+interval '4 weeks'
   group by o.location_id,date_trunc('week',o.requested_at)::date,b.component_item_id
 ), scheduled as (
-  select d.*,child.id component_item_id,child.name component_item,child.sku,child.lead_time_days,
+  select d.*,child.name component_item,child.sku,child.lead_time_days,
          coalesce(inv.on_hand,0)::integer on_hand,
          coalesce(po.open_quantity,0)::integer open_purchase_quantity,
          coalesce(sum(d.gross_requirement) over (partition by d.location_id,d.component_item_id order by d.week_start rows between unbounded preceding and current row),0)::integer cumulative_requirement
@@ -591,8 +607,8 @@ begin
   v_tax := round((v_subtotal-v_discount)*v_tax_rate,2);
   v_total := v_subtotal-v_discount+v_tax;
 
-  insert into public.sales_orders(id,customer_id,location_id,status,subtotal,discount_amount,tax_amount,total,discount_code,pickup,created_by,fulfilled_at)
-  values(v_order_id,p_customer_id,p_location_id,'fulfilled',v_subtotal,v_discount,v_tax,v_total,nullif(upper(trim(p_discount_code)),''),true,auth.uid(),now())
+  insert into public.sales_orders(id,customer_id,location_id,status,payment_status,subtotal,discount_amount,tax_amount,total,discount_code,pickup,created_by,fulfilled_at)
+  values(v_order_id,p_customer_id,p_location_id,'fulfilled','paid',v_subtotal,v_discount,v_tax,v_total,nullif(upper(trim(p_discount_code)),''),true,auth.uid(),now())
   returning order_number into v_order_number;
 
   for v_row in select * from jsonb_to_recordset(p_lines) as x(item_id uuid, quantity integer) loop
@@ -616,6 +632,139 @@ $$;
 revoke all on function public.checkout_pos(uuid,uuid,jsonb,text) from public, anon;
 grant execute on function public.checkout_pos(uuid,uuid,jsonb,text) to authenticated;
 
+create function public.create_online_order(p_location_id uuid,p_lines jsonb,p_discount_code text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_order_id uuid:=gen_random_uuid(); v_customer_id uuid; v_subtotal numeric(12,2):=0;
+  v_discount_rate numeric(5,2):=0; v_discount numeric(12,2):=0; v_tax_rate numeric(6,5);
+  v_tax numeric(12,2); v_total numeric(12,2); v_lead_days integer:=0; v_order_number bigint;
+  v_row record; v_item public.items%rowtype; v_stock public.inventory%rowtype;
+  v_reserved integer; v_lines jsonb:='[]'::jsonb;
+begin
+  if auth.uid() is null then raise exception 'Sign in to place an order'; end if;
+  select id into v_customer_id from public.customers where user_id=auth.uid();
+  if not found then raise exception 'Customer profile is unavailable'; end if;
+  if jsonb_typeof(p_lines)<>'array' or jsonb_array_length(p_lines)=0 then raise exception 'Add at least one bike'; end if;
+  if exists(select 1 from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer) where item_id is null or quantity is null or quantity<=0) then raise exception 'Choose valid products and quantities'; end if;
+  if exists(select item_id from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer) group by item_id having count(*)>1) then raise exception 'Each bike can appear only once in the cart'; end if;
+  select tax_rate into v_tax_rate from public.locations where id=p_location_id and location_type='storefront' and active;
+  if not found then raise exception 'Choose an active pickup storefront'; end if;
+
+  for v_row in select * from jsonb_to_recordset(p_lines) as x(item_id uuid,quantity integer) order by item_id loop
+    select * into v_item from public.items where id=v_row.item_id and active and item_type='bike';
+    if not found then raise exception 'Choose an active bike'; end if;
+    select * into v_stock from public.inventory where item_id=v_item.id and location_id=p_location_id for update;
+    if not found then raise exception 'Inventory is not configured for this pickup location'; end if;
+    v_reserved:=least(v_row.quantity,greatest(v_stock.on_hand-v_stock.reserved,0));
+    if v_reserved<v_row.quantity then v_lead_days:=greatest(v_lead_days,v_item.lead_time_days); end if;
+    update public.inventory set reserved=reserved+v_reserved,updated_at=now() where item_id=v_item.id and location_id=p_location_id;
+    v_subtotal:=v_subtotal+v_item.sale_price*v_row.quantity;
+    v_lines:=v_lines||jsonb_build_array(jsonb_build_object('item_id',v_item.id,'quantity',v_row.quantity,'unit_price',v_item.sale_price,'unit_cost',v_stock.average_cost,'reserved_quantity',v_reserved));
+  end loop;
+
+  if nullif(trim(p_discount_code),'') is not null then
+    select percent_off into v_discount_rate from public.discounts
+    where upper(code)=upper(trim(p_discount_code)) and active and starts_at<=now() and (ends_at is null or ends_at>=now());
+    if not found then raise exception 'Discount code is invalid or expired'; end if;
+    if exists(select 1 from public.discounts where upper(code)=upper(trim(p_discount_code)) and first_order_only)
+       and exists(select 1 from public.sales_orders where customer_id=v_customer_id and payment_status='paid') then
+      raise exception 'This code is for a first order';
+    end if;
+    v_discount:=round(v_subtotal*v_discount_rate/100,2);
+  end if;
+  v_tax:=round((v_subtotal-v_discount)*v_tax_rate,2);
+  v_total:=v_subtotal-v_discount+v_tax;
+  insert into public.sales_orders(id,customer_id,location_id,status,payment_status,subtotal,discount_amount,tax_amount,total,discount_code,pickup,requested_at,estimated_available_at,created_by)
+  values(v_order_id,v_customer_id,p_location_id,'placed','unpaid',v_subtotal,v_discount,v_tax,v_total,nullif(upper(trim(p_discount_code)),''),true,now(),case when v_lead_days>0 then now()+make_interval(days=>v_lead_days) else null end,auth.uid())
+  returning order_number into v_order_number;
+  for v_row in select * from jsonb_to_recordset(v_lines) as x(item_id uuid,quantity integer,unit_price numeric,unit_cost numeric,reserved_quantity integer) loop
+    insert into public.sales_order_lines(order_id,item_id,quantity,unit_price,unit_cost,reserved_quantity)
+    values(v_order_id,v_row.item_id,v_row.quantity,v_row.unit_price,v_row.unit_cost,v_row.reserved_quantity);
+  end loop;
+  return jsonb_build_object('order_id',v_order_id,'order_number',v_order_number,'total',v_total,'subtotal',v_subtotal,'discount',v_discount,'tax',v_tax);
+end;
+$$;
+
+create function public.set_checkout_session(p_order_id uuid,p_session_id text)
+returns boolean language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null or nullif(trim(p_session_id),'') is null then raise exception 'Invalid checkout session'; end if;
+  update public.sales_orders set stripe_checkout_session_id=trim(p_session_id)
+  where id=p_order_id and created_by=auth.uid() and status='placed' and payment_status='unpaid';
+  return found;
+end;
+$$;
+
+create function public.cancel_unpaid_order(p_order_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_order public.sales_orders%rowtype; v_line record;
+begin
+  select * into v_order from public.sales_orders where id=p_order_id for update;
+  if not found then return; end if;
+  if coalesce(auth.role(),'')<>'service_role' and (auth.uid() is null or v_order.created_by<>auth.uid()) then raise exception 'Order access denied'; end if;
+  if v_order.payment_status<>'unpaid' or v_order.status='cancelled' then return; end if;
+  for v_line in select item_id,reserved_quantity from public.sales_order_lines where order_id=p_order_id and reserved_quantity>0 loop
+    update public.inventory set reserved=greatest(reserved-v_line.reserved_quantity,0),updated_at=now()
+      where item_id=v_line.item_id and location_id=v_order.location_id;
+  end loop;
+  update public.sales_order_lines set reserved_quantity=0 where order_id=p_order_id;
+  update public.sales_orders set status='cancelled' where id=p_order_id;
+end;
+$$;
+
+create function public.complete_online_payment(p_order_id uuid,p_session_id text,p_payment_intent_id text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_order public.sales_orders%rowtype; v_cost numeric(12,2);
+begin
+  if coalesce(auth.role(),'')<>'service_role' then raise exception 'Payment confirmation must come from the server'; end if;
+  select * into v_order from public.sales_orders where id=p_order_id for update;
+  if not found or v_order.stripe_checkout_session_id<>p_session_id then raise exception 'Checkout session does not match order'; end if;
+  if v_order.payment_status='paid' then return; end if;
+  if v_order.payment_status<>'unpaid' or v_order.status='cancelled' then raise exception 'Order is no longer payable'; end if;
+  select coalesce(sum(quantity*unit_cost),0) into v_cost from public.sales_order_lines where order_id=p_order_id;
+  update public.sales_orders set status='confirmed',payment_status='paid',stripe_payment_intent_id=p_payment_intent_id where id=p_order_id;
+  insert into public.financial_entries(entry_date,account,debit,credit,reference_type,reference_id)
+  values(current_date,'Revenue',0,v_order.subtotal-v_order.discount_amount,'online_order_revenue',p_order_id),
+        (current_date,'Cost of Goods Sold',v_cost,0,'online_order_cogs',p_order_id)
+  on conflict do nothing;
+  insert into public.email_outbox(order_id,recipient,template,status)
+  select p_order_id,c.email,'order_confirmation','queued' from public.customers c where c.id=v_order.customer_id
+  on conflict do nothing;
+end;
+$$;
+
+revoke all on function public.create_online_order(uuid,jsonb,text) from public,anon;
+revoke all on function public.set_checkout_session(uuid,text) from public,anon;
+revoke all on function public.cancel_unpaid_order(uuid) from public,anon;
+revoke all on function public.complete_online_payment(uuid,text,text) from public,anon,authenticated;
+grant execute on function public.create_online_order(uuid,jsonb,text), public.set_checkout_session(uuid,text), public.cancel_unpaid_order(uuid) to authenticated;
+grant execute on function public.cancel_unpaid_order(uuid), public.complete_online_payment(uuid,text,text) to service_role;
+
+create function public.fulfill_sales_order(p_order_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_order public.sales_orders%rowtype; v_line record; v_stock public.inventory%rowtype; v_reserve_more integer;
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  select * into v_order from public.sales_orders where id=p_order_id for update;
+  if not found or v_order.status<>'confirmed' or v_order.payment_status<>'paid' then raise exception 'Only paid, confirmed orders can be fulfilled'; end if;
+  for v_line in select id,item_id,quantity,reserved_quantity,unit_cost from public.sales_order_lines where order_id=p_order_id order by item_id for update loop
+    select * into v_stock from public.inventory where item_id=v_line.item_id and location_id=v_order.location_id for update;
+    if not found then raise exception 'Inventory is not configured for this order'; end if;
+    v_reserve_more:=greatest(v_line.quantity-v_line.reserved_quantity,0);
+    if v_stock.on_hand-v_stock.reserved<v_reserve_more then raise exception 'This order has a backorder; receive or transfer stock before fulfillment'; end if;
+    update public.inventory set reserved=reserved+v_reserve_more where item_id=v_line.item_id and location_id=v_order.location_id;
+    update public.inventory set on_hand=on_hand-v_line.quantity,reserved=reserved-v_line.quantity,updated_at=now()
+      where item_id=v_line.item_id and location_id=v_order.location_id;
+    update public.sales_order_lines set reserved_quantity=0,fulfilled_quantity=quantity where id=v_line.id;
+    insert into public.inventory_movements(item_id,location_id,quantity_delta,reason_code,reference_type,reference_id,unit_cost,actor_id)
+      values(v_line.item_id,v_order.location_id,-v_line.quantity,'CUSTOMER_ORDER_FULFILLMENT','sales_order',p_order_id,v_line.unit_cost,auth.uid());
+  end loop;
+  update public.sales_orders set status='fulfilled',fulfilled_at=now() where id=p_order_id;
+end;
+$$;
+revoke all on function public.fulfill_sales_order(uuid) from public,anon;
+grant execute on function public.fulfill_sales_order(uuid) to authenticated;
+
 create function public.adjust_inventory(p_item_id uuid,p_location_id uuid,p_delta integer,p_reason text)
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_on_hand integer;
@@ -624,7 +773,7 @@ begin
   if p_delta=0 or nullif(trim(p_reason),'') is null then raise exception 'Enter a non-zero adjustment and reason'; end if;
   select on_hand into v_on_hand from public.inventory where item_id=p_item_id and location_id=p_location_id for update;
   if not found then raise exception 'Inventory record not found'; end if;
-  if v_on_hand+p_delta<0 then raise exception 'Adjustment would make stock negative'; end if;
+  if v_on_hand+p_delta<(select reserved from public.inventory where item_id=p_item_id and location_id=p_location_id) then raise exception 'Adjustment cannot reduce stock below reserved quantity'; end if;
   update public.inventory set on_hand=on_hand+p_delta,updated_at=now() where item_id=p_item_id and location_id=p_location_id returning on_hand into v_on_hand;
   insert into public.inventory_movements(item_id,location_id,quantity_delta,reason_code,reference_type,unit_cost,actor_id)
   select p_item_id,p_location_id,p_delta,upper(trim(p_reason)),'adjustment',average_cost,auth.uid()
@@ -776,6 +925,7 @@ begin
   if p_quantity<=0 or nullif(trim(p_reason_code),'') is null then raise exception 'Enter quantity and a return reason'; end if;
   if p_disposition not in ('restock','quarantine','scrap','exchange') then raise exception 'Choose a valid disposition'; end if;
   select * into v_order from public.sales_orders where id=p_order_id and status in ('fulfilled','closed');
+  if not found then raise exception 'Choose a fulfilled order'; end if;
   select * into v_line from public.sales_order_lines where order_id=p_order_id and item_id=p_item_id for update;
   if not found then raise exception 'No fulfilled line matches this return'; end if;
   select coalesce(sum(quantity),0)::integer into v_returned from public.returns where order_id=p_order_id and item_id=p_item_id;
@@ -805,7 +955,7 @@ declare v_id uuid:=gen_random_uuid(); v_order public.sales_orders%rowtype;
 begin
   if not public.is_staff() then raise exception 'Staff access required'; end if;
   select * into v_order from public.sales_orders where id=p_order_id for update;
-  if not found or v_order.status in ('cancelled','closed') then raise exception 'Choose an open order to ship'; end if;
+  if not found or v_order.status in ('cancelled','closed') or v_order.payment_status<>'paid' then raise exception 'Choose a paid order that is ready to ship'; end if;
   if exists(select 1 from public.shipments where order_id=p_order_id) then raise exception 'This order already has a shipment'; end if;
   insert into public.shipments(id,order_id,status,tracking_code,estimated_at)
     values(v_id,p_order_id,'processing','WCW-'||v_order.order_number::text,now()+interval '3 days');
