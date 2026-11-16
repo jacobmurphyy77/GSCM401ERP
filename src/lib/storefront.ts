@@ -5,6 +5,7 @@ export type CatalogItem = {
   description: string;
   sale_price: number;
   lead_time_days: number;
+  item_type: "bike" | "component";
 };
 
 export type PickupLocation = {
@@ -13,9 +14,11 @@ export type PickupLocation = {
   city: string;
   postal_code: string;
   tax_rate: number;
+  location_type?: "storefront" | "warehouse";
 };
 
 export type Stock = { item_id: string; location_id: string; on_hand: number; reserved: number };
+export type BomLine = { parent_item_id: string; component_item_id: string; quantity_per: number };
 export type Cart = Record<string, number>;
 
 const employeeRoles = ["sales", "warehouse", "production", "finance", "manager"];
@@ -27,6 +30,12 @@ export function isEmployeeRole(role: unknown) {
 export function availableStock(stock: Stock[], itemId: string, locationId: string) {
   const row = stock.find((entry) => entry.item_id === itemId && entry.location_id === locationId);
   return Math.max(0, Number(row?.on_hand ?? 0) - Number(row?.reserved ?? 0));
+}
+
+export function retailStockLocation(item: CatalogItem, pickup: PickupLocation | undefined, locations: PickupLocation[]) {
+  if (!pickup) return null;
+  if (item.item_type !== "component") return pickup.id;
+  return locations.find((location) => location.city === pickup.city && location.location_type === "warehouse")?.id ?? null;
 }
 
 export function parseSavedCart(value: string | null): Cart {
@@ -41,7 +50,7 @@ export function parseSavedCart(value: string | null): Cart {
 }
 
 export function calculateCart(items: CatalogItem[], cart: Cart, discountPercent: number, taxRate: number) {
-  const rows = items.filter((item) => Number.isSafeInteger(cart[item.id]) && cart[item.id] > 0);
+  const rows = items.filter((item) => Number(item.sale_price) > 0 && Number.isSafeInteger(cart[item.id]) && cart[item.id] > 0);
   const subtotalCents = rows.reduce((sum, item) => sum + Math.round(Number(item.sale_price) * 100) * cart[item.id], 0);
   const rate = Math.min(100, Math.max(0, Number(discountPercent) || 0));
   const discountCents = Math.round(subtotalCents * rate / 100);
@@ -65,6 +74,13 @@ const presentation: Record<string, { image: string; category: string; caption: s
   "BIKE-GRAVEL": { image: "gravel.webp", category: "Gravel", caption: "For the days that call for the long way home." },
   "BIKE-TRI": { image: "tri.webp", category: "Triathlon", caption: "Find your rhythm on the open road." },
   "BIKE-KIDS": { image: "kids.webp", category: "Kids", caption: "Small wheels. Big adventures." },
+  "PART-FRAME": { image: "part-frame.webp", category: "Frames", caption: "The starting point of a great ride." },
+  "PART-WHEEL": { image: "part-wheel.webp", category: "Wheels", caption: "Keep your next adventure rolling. Sold individually." },
+  "PART-TIRE": { image: "part-tire.webp", category: "Tires", caption: "A fresh connection to the road. Sold individually." },
+  "PART-BRAKE": { image: "part-brake.webp", category: "Brakes", caption: "The brake set used in our bike builds." },
+  "PART-DRIVE": { image: "part-drivetrain.webp", category: "Drivetrain", caption: "Keep the power moving through your ride." },
+  "PART-SEAT": { image: "part-seat.webp", category: "Saddles", caption: "Make yourself at home on the bike." },
+  "PART-BAR": { image: "part-bar.webp", category: "Handlebars", caption: "Find your direction, one ride at a time." },
 };
 
 export const productPresentation = (item: CatalogItem) => presentation[item.sku] ?? { image: "gravel.webp", category: "Bikes", caption: item.description };

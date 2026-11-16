@@ -27,7 +27,7 @@ Deno.serve(async (request) => {
   try { body = await request.json(); }
   catch { return Response.json({ error: "Invalid checkout request." }, { status: 400, headers: corsHeaders }); }
   if (!body.location_id || !Array.isArray(body.lines) || body.lines.length === 0) {
-    return Response.json({ error: "Choose a pickup store and add at least one bike." }, { status: 400, headers: corsHeaders });
+    return Response.json({ error: "Choose a pickup store and add at least one product." }, { status: 400, headers: corsHeaders });
   }
 
   const { data: order, error: orderError } = await supabase.rpc("create_online_order", {
@@ -44,7 +44,7 @@ Deno.serve(async (request) => {
   params.set("cancel_url", `${appUrl}/?checkout=cancelled&order=${order.order_number}&order_id=${order.order_id}&session_id={CHECKOUT_SESSION_ID}`);
   params.set("line_items[0][price_data][currency]", "usd");
   params.set("line_items[0][price_data][product_data][name]", `Wasatch Cycle Works order ${order.order_number}`);
-  params.set("line_items[0][price_data][product_data][description]", "Bike purchase, Utah sales tax, and any applied discount");
+  params.set("line_items[0][price_data][product_data][description]", "Bikes and parts, Utah sales tax, and any applied discount");
   params.set("line_items[0][price_data][unit_amount]", String(Math.round(Number(order.total) * 100)));
   params.set("line_items[0][quantity]", "1");
   params.set("metadata[order_id]", order.order_id);

@@ -5,12 +5,12 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/lib/storefront.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
-const { availableStock, calculateCart, isEmployeeRole, parseSavedCart } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
+const { availableStock, calculateCart, isEmployeeRole, parseSavedCart, retailStockLocation } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
 
 const id = "12345678-1234-1234-1234-123456789abc";
 const secondId = "87654321-4321-4321-4321-cba987654321";
-const items = [{ id, sku: "BIKE-STREET", name: "Street Bike", description: "", sale_price: 899, lead_time_days: 14 },
-  { id: secondId, sku: "BIKE-KIDS", name: "Kids Bike", description: "", sale_price: 299, lead_time_days: 10 }];
+const items = [{ id, sku: "BIKE-STREET", name: "Street Bike", description: "", sale_price: 899, lead_time_days: 14, item_type: "bike" },
+  { id: secondId, sku: "BIKE-KIDS", name: "Kids Bike", description: "", sale_price: 299, lead_time_days: 10, item_type: "bike" }];
 
 test("a multi-item cart discounts the stored subtotal before pickup-store tax", () => {
   const result = calculateCart(items, { [id]: 2, [secondId]: 1 }, 15, 0.073);
@@ -50,4 +50,31 @@ test("availability uses only the selected store and subtracts reservations", () 
 test("only stored employee roles qualify for the operations workspace", () => {
   for (const role of ["customer", "admin", "", undefined, null, { role: "manager" }]) assert.equal(isEmployeeRole(role), false);
   for (const role of ["sales", "warehouse", "production", "finance", "manager"]) assert.equal(isEmployeeRole(role), true);
+});
+
+
+test("parts use the pickup city's production warehouse while bikes use the storefront", () => {
+  const locations = [
+    { id: "store", city: "Logan", location_type: "storefront" },
+    { id: "warehouse", city: "Logan", location_type: "warehouse" },
+    { id: "provo-warehouse", city: "Provo", location_type: "warehouse" },
+  ];
+  assert.equal(retailStockLocation(items[0], locations[0], locations), "store");
+  assert.equal(retailStockLocation({ ...items[0], item_type: "component" }, locations[0], locations), "warehouse");
+  assert.equal(retailStockLocation({ ...items[0], item_type: "component" }, { id: "slc", city: "Salt Lake City" }, locations), null);
+});
+
+test("a mixed bike-and-parts bag applies the first-order discount and tax to retail prices", () => {
+  const wheel = { ...items[0], id: secondId, item_type: "component", sale_price: 82.50 };
+  const result = calculateCart([items[0], wheel], { [id]: 1, [secondId]: 2 }, 15, 0.073);
+  assert.equal(result.subtotal, 1064);
+  assert.equal(result.discount, 159.6);
+  assert.equal(result.tax, 66.02);
+  assert.equal(result.total, 970.42);
+});
+
+test("unpriced components are not treated as free products", () => {
+  const result = calculateCart([{ ...items[0], item_type: "component", sale_price: 0 }], { [id]: 4 }, 0, 0.073);
+  assert.equal(result.units, 0);
+  assert.deepEqual(result.rows, []);
 });

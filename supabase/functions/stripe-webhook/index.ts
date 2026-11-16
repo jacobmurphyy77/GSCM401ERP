@@ -74,7 +74,7 @@ Deno.serve(async (request) => {
   const customer = order.customers as { name?: string } | null;
   const availability = order.estimated_available_at
     ? `Some or all items are on backorder. Estimated availability: ${new Date(order.estimated_available_at).toLocaleDateString("en-US", { timeZone: "UTC" })}.`
-    : "Your bikes are reserved for pickup at your selected Wasatch Cycle Works store.";
+    : "Your items are reserved for pickup at your selected Wasatch Cycle Works store.";
   const emailResponse = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },

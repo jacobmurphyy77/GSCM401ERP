@@ -10,6 +10,8 @@ The **Employee sign in** link opens `/employee/`, where an authenticated employe
 
 `npm run test:storefront` checks stored-data cart calculations, tax changes, restored bags, store availability, and employee-role boundaries. `npm run build:pages` exports both the storefront and employee routes.
 
+The storefront includes an edge-to-edge Wasatch panorama, a bike collection, and a parts collection. Bike details show component quantities from the stored BOM; part details link back to the bike builds that use them. Apply `supabase/migrations/202611160002_retail_parts.sql` after the foundation migration to enable the approved component retail prices and parts checkout. Parts use the selected pickup city's back-warehouse stock, shared with production. The migration preserves existing orders' stock locations, releases reservations correctly on cancellation, and nets MRP against unreserved warehouse inventory.
+
 ## Local setup
 
 1. Use Node.js 20 or newer.
