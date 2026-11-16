@@ -1,6 +1,8 @@
 -- Wasatch Cycle Works demo ERP foundation.
 -- Apply in the linked Supabase project after reviewing the tax/location seed values.
 
+begin;
+
 create extension if not exists pgcrypto;
 
 create type public.app_role as enum ('customer', 'sales', 'warehouse', 'production', 'finance', 'manager');
@@ -375,7 +377,7 @@ left join lateral (
 ) po on true;
 
 create view public.profit_and_loss with (security_invoker = true) as
-select date_trunc('month', entry_date)::date month,
+select date_trunc('month', entry_date)::date as month,
        coalesce(sum(credit - debit) filter (where account = 'Revenue'), 0) revenue,
        coalesce(sum(debit - credit) filter (where account = 'Cost of Goods Sold'), 0) cost_of_goods_sold,
        coalesce(sum(credit - debit) filter (where account = 'Revenue'), 0) -
@@ -980,3 +982,12 @@ $$;
 revoke all on function public.create_demo_shipment(uuid) from public,anon;
 revoke all on function public.update_demo_shipment(uuid,public.shipment_status,text) from public,anon;
 grant execute on function public.create_demo_shipment(uuid), public.update_demo_shipment(uuid,public.shipment_status,text) to authenticated;
+
+commit;
+
+-- The SQL editor displays these counts when setup has completed.
+select
+  (select count(*) from public.locations) as locations,
+  (select count(*) from public.items) as catalog_items,
+  (select count(*) from public.sales_orders) as historical_orders,
+  (select percent_off from public.discounts where code='WRIGHTISCOOL') as discount_percent;
