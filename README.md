@@ -5,7 +5,7 @@ A demo ERP foundation for a fictional bike retailer and assembler. It is built w
 ## Local setup
 
 1. Use Node.js 20 or newer.
-2. Install dependencies with `npm install`.
+2. Install dependencies with `npm ci`.
 3. Copy `.env.example` to `.env.local` and set the Supabase URL and publishable key.
 4. Apply `supabase/migrations/202611160001_erp_foundation.sql` in the Supabase SQL editor.
 5. Run `npm run dev` and open http://localhost:3000.
@@ -36,11 +36,15 @@ The provider code needs to be deployed and configured before online payment or e
 
 1. Create Stripe test-mode credentials and a Resend account with a verified sender address.
 2. Apply the database migration, then deploy `create-checkout-session`, `cancel-checkout-session`, and `stripe-webhook` using the Supabase CLI or dashboard function editor. The included `supabase/config.toml` keeps customer functions authenticated and allows Stripe's signed webhook request through.
-3. Add these Supabase Edge Function secrets: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `ORDERS_FROM_EMAIL`, and `APP_URL`. `APP_URL` is the published Sites address.
+3. Add these Supabase Edge Function secrets: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `ORDERS_FROM_EMAIL`, and `APP_URL`. `APP_URL` is the published GitHub Pages address, including `/GSCM401ERP` and without a trailing slash.
 4. In Stripe, add a webhook endpoint at `https://skfmrqrsmnsmoniyuzdq.supabase.co/functions/v1/stripe-webhook` for `checkout.session.completed` and `checkout.session.expired`, then store its signing secret as `STRIPE_WEBHOOK_SECRET`.
 
 Keep all provider secrets in Supabase Edge Function secrets. The browser only uses the Supabase publishable key. An expired or cancelled Stripe checkout releases the associated inventory reservation; successful payment confirms the order and queues its confirmation email.
 
 ## Hosting and services
 
-The GitHub repo is the source record. Supabase stores authentication and ERP data. Sites is the requested app host. Apply the migration before creating the first staff account, then promote that account with the SQL above. A publishable key is public by design and belongs in `.env.local` for local work and in the host’s environment configuration for deployment. Never use a Supabase secret/service-role key in browser code or GitHub.
+The GitHub repo holds the source, GitHub Pages serves the frontend, and Supabase stores authentication and ERP data. The app uses Next.js static export; all database writes and provider integrations run in Supabase. Apply the migration before creating the first staff account, then promote that account with the SQL above. A publishable key is public by design and belongs in `.env.local` for local work and in the build environment for deployment. Never use a Supabase secret/service-role key in browser code or GitHub.
+
+Run `npm run build:pages` to create `out/` with the repository base path and `.nojekyll` marker. Publish the contents of `out/` to the `gh-pages` branch, then select that branch and `/ (root)` under **Settings → Pages → Deploy from a branch**. `npm run build` creates a static export for a root-domain host. `npm start` serves the root-domain export locally.
+
+Set Supabase **Authentication → URL Configuration → Site URL** to the published app URL and add the same URL as an allowed redirect. This is separate from signing in to the Supabase dashboard.
