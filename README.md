@@ -2,6 +2,14 @@
 
 A demo ERP foundation for a fictional bike retailer and assembler. It is built with Next.js, TypeScript, and Supabase.
 
+## Customer store and employee workspace
+
+The homepage is the public bike storefront. Visitors can browse bike images, select a pickup store, check live availability, and build a saved bag before signing in. Customer accounts can review their own orders and shipment timelines. The charcoal, white, and muted-blue brand includes an SVG mountain-and-chain logo; generated bike images are labeled as illustrative.
+
+The **Employee sign in** link opens `/employee/`, where an authenticated employee role is required before operational data is loaded. Existing employees keep their accounts and the Overview, POS, Inventory, Production, Purchasing, MRP, Reports, and Shipments workflows. Customer accounts do not gain employee access by visiting this route. No new database migration is needed for this storefront update.
+
+`npm run test:storefront` checks stored-data cart calculations, tax changes, restored bags, store availability, and employee-role boundaries. `npm run build:pages` exports both the storefront and employee routes.
+
 ## Local setup
 
 1. Use Node.js 20 or newer.
