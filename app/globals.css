@@ -1,0 +1,81 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: light;
+  --ink: #172a3a;
+  --muted: #536878;
+  --surface: #ffffff;
+  --canvas: #f2f6f8;
+  --line: #dce6ea;
+  --accent: #126b61;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.page-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+}
+
+.welcome-card {
+  width: min(100%, 680px);
+  padding: clamp(2rem, 6vw, 4rem);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 20px 60px rgb(23 42 58 / 7%);
+}
+
+.eyebrow {
+  margin: 0 0 0.8rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2.25rem, 7vw, 3.5rem);
+  letter-spacing: -0.05em;
+}
+
+.intro {
+  max-width: 48ch;
+  margin: 1.25rem 0 2rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.setup-note {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem 1.2rem;
+  border-left: 3px solid var(--accent);
+  background: #f3f8f7;
+  line-height: 1.6;
+}
+
+code {
+  border-radius: 0.25rem;
+  background: #e6efed;
+  padding: 0.1rem 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
