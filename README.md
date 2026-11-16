@@ -1,15 +1,29 @@
-# Supply Chain Operations ERP
+# Wasatch Cycle Works ERP
 
-Starter application for a supply chain operations ERP, built with Next.js, TypeScript, and Supabase.
+A demo ERP foundation for a fictional bike retailer and assembler. It is built with Next.js, TypeScript, and Supabase.
 
 ## Local setup
 
-1. Install Node.js 20 or newer.
-2. Run `npm install`.
-3. Copy `.env.example` to `.env.local`.
-4. Fill in the Supabase publishable key from the Supabase dashboard.
+1. Use Node.js 20 or newer.
+2. Install dependencies with `npm install`.
+3. Copy `.env.example` to `.env.local` and set the Supabase URL and publishable key.
+4. Apply `supabase/migrations/202611160001_erp_foundation.sql` in the Supabase SQL editor.
 5. Run `npm run dev` and open http://localhost:3000.
 
-The Supabase project URL is already configured in `.env.example`. Keep `.env.local` out of Git. Use only the publishable key in browser-accessible configuration; never expose the service-role key.
+The migration creates the base ERP schema, demo products and locations, the WRIGHTISCOOL first-order discount, six months of generated sales, live inventory and financial views, and POS/inventory/purchasing/production database operations. It uses editable 2026 Q4 city-level tax rates for the named storefront cities and supplied ZIP codes, based on the [Utah State Tax Commission rate table](https://files.tax.utah.gov/tax/salestax/rate/26q4simple.pdf). For tax compliance, use the Commission's address or ZIP+4 lookup for a real storefront.
 
-Database tables and ERP modules should be added after defining the initial workflows and access roles. Enable Row Level Security (RLS) for tables that contain business data.
+New accounts are customer accounts. An administrator must assign staff roles in Supabase before those accounts can use operational modules. The project’s first staff role can be assigned with:
+
+```sql
+update public.profiles set role = 'manager' where id = '<auth-user-id>';
+```
+
+## Current scope
+
+The app includes authentication, a responsive operations shell, a POS flow with barcode input and a first-order discount, shared inventory/order/report views, and realtime refresh subscriptions. The database migration defines inventory, purchasing, production, MRP, supplier, shipment, finance, and return structures.
+
+Payment processing, confirmation email delivery, customer online checkout, barcode camera scanning, returns/exchanges, and write forms for production and purchasing still need provider credentials and application workflows before the system is ready for the class demo. No customer service-role key belongs in the app.
+
+## Hosting and services
+
+The GitHub repo is the source record. Supabase stores authentication and ERP data. Sites is the requested app host. A publishable key is public by design but is kept in `.env.local` for local work and in the host’s runtime/build configuration for deployment. Never use a Supabase secret/service-role key in browser code or GitHub.
