@@ -6,6 +6,7 @@ import { createClient } from "@/src/lib/supabase/client";
 type Row = Record<string, unknown>;
 type Item = { id: string; sku: string; name: string; sale_price: number; item_type: string; barcode: string };
 type Location = { id: string; name: string; city: string; location_type: string; tax_rate: number };
+type Customer = { id: string; name: string; email: string };
 type ModuleKey = "overview" | "pos" | "inventory" | "orders" | "production" | "purchasing" | "mrp" | "reports" | "shipments";
 
 const modules: { id: ModuleKey; label: string }[] = [
@@ -28,6 +29,7 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [items, setItems] = useState<Item[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [inventory, setInventory] = useState<Row[]>([]);
   const [orders, setOrders] = useState<Row[]>([]);
   const [mrp, setMrp] = useState<Row[]>([]);
@@ -35,6 +37,7 @@ export default function Home() {
   const [turnover, setTurnover] = useState<Row[]>([]);
   const [suppliers, setSuppliers] = useState<Row[]>([]);
   const [selectedLocation, setSelectedLocation] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [cart, setCart] = useState<Record<string, number>>({});
@@ -42,9 +45,10 @@ export default function Home() {
   const [barcode, setBarcode] = useState("");
 
   const refresh = useCallback(async () => {
-    const [itemResult, locationResult, stockResult, orderResult, mrpResult, pnlResult, turnoverResult, supplierResult] = await Promise.all([
+    const [itemResult, locationResult, customerResult, stockResult, orderResult, mrpResult, pnlResult, turnoverResult, supplierResult] = await Promise.all([
       supabase.from("items").select("id,sku,name,sale_price,item_type,barcode").eq("active", true).order("name"),
       supabase.from("locations").select("id,name,city,location_type,tax_rate").eq("active", true).order("name"),
+      supabase.from("customers").select("id,name,email").order("name"),
       supabase.from("inventory_by_location").select("*").order("location_name"),
       supabase.from("sales_orders").select("id,order_number,status,total,discount_amount,tax_amount,requested_at,pickup,shipments(status,tracking_code)").order("created_at", { ascending: false }).limit(100),
       supabase.from("mrp_four_weeks").select("*", { count: "exact" }).order("order_by_date"),
@@ -58,6 +62,7 @@ export default function Home() {
       setLocations(rows);
       setSelectedLocation((current) => current || rows.find((row) => row.location_type === "storefront")?.id || "");
     }
+    if (customerResult.data) setCustomers(customerResult.data as Customer[]);
     if (stockResult.data) setInventory(stockResult.data as Row[]);
     if (orderResult.data) setOrders(orderResult.data as Row[]);
     if (mrpResult.data) setMrp(mrpResult.data as Row[]);
@@ -97,7 +102,7 @@ export default function Home() {
     if (!selectedLocation) return setNotice("Choose a storefront first.");
     const lines = Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([item_id, quantity]) => ({ item_id, quantity }));
     setBusy(true); setNotice("");
-    const { data, error } = await supabase.rpc("checkout_pos", { p_location_id: selectedLocation, p_customer_id: null, p_lines: lines, p_discount_code: discountCode || null });
+    const { data, error } = await supabase.rpc("checkout_pos", { p_location_id: selectedLocation, p_customer_id: selectedCustomer || null, p_lines: lines, p_discount_code: discountCode || null });
     setBusy(false);
     if (error) return setNotice(error.message);
     setCart({}); setDiscountCode(""); setNotice(`Sale ${data.order_number} recorded for ${money(data.total)}.`); await refresh();
@@ -128,6 +133,7 @@ export default function Home() {
   const isStaff = profile?.role && profile.role !== "customer";
   const cartRows = items.filter((item) => cart[item.id]);
   const subtotal = cartRows.reduce((total, item) => total + item.sale_price * cart[item.id], 0);
+  const discountPreview = discountCode.toUpperCase() === "WRIGHTISCOOL" ? subtotal * 0.15 : 0;
   const store = locations.find((location) => location.id === selectedLocation);
   const recentRevenue = pnl.reduce((total, row) => total + Number(row.revenue ?? 0), 0);
   const currentStock = inventory.reduce((total, row) => total + Number(row.on_hand ?? 0), 0);
@@ -154,7 +160,7 @@ export default function Home() {
             </div>
             <section className="panel"><div className="panel-heading"><div><h2>Recent sales orders</h2><p>Sales, inventory, and fulfillment share the same records.</p></div><button className="secondary" onClick={() => setModule("orders")}>View orders</button></div><Rows rows={orders.slice(0,6)} columns={[["order_number","Order"],["status","Status"],["requested_at","Placed"],["total","Total"]]} moneyColumns={["total"]} /></section>
           </>}
-          {module === "pos" && <div className="split-grid"><section className="panel"><div className="panel-heading"><div><h2>New sale</h2><p>Scan a printed barcode or add products by name.</p></div></div><label>Storefront<select value={selectedLocation} onChange={(e) => setSelectedLocation(e.target.value)}>{locations.filter((row) => row.location_type === "storefront").map((row) => <option key={row.id} value={row.id}>{row.name} · {(row.tax_rate*100).toFixed(2)}% tax</option>)}</select></label><label>Scan barcode<input value={barcode} onChange={(e) => setBarcode(e.target.value)} onKeyDown={(e) => { if(e.key==="Enter"){e.preventDefault();void scanBarcode(barcode);} }} placeholder="Scan or enter barcode, then press Enter" /></label><div className="product-grid">{items.filter((item) => item.item_type === "bike").map((item) => <button className="product-card" key={item.id} onClick={() => setCart((current) => ({...current,[item.id]:(current[item.id]??0)+1}))}><span>{item.name}</span><strong>{money(item.sale_price)}</strong><small>{item.sku}</small></button>)}</div></section><section className="panel"><h2>Current cart</h2>{cartRows.length ? cartRows.map((item)=><div className="cart-row" key={item.id}><span>{item.name}<small>{money(item.sale_price)} each</small></span><div><button aria-label={`Remove one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:Math.max(0,(c[item.id]??0)-1)}))}>−</button><b>{cart[item.id]}</b><button aria-label={`Add one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:(c[item.id]??0)+1}))}>+</button></div></div>):<p className="muted">Add a bike to begin.</p>}<label>Discount code<input value={discountCode} onChange={(e)=>setDiscountCode(e.target.value.toUpperCase())} placeholder="WRIGHTISCOOL" /></label><div className="totals"><span>Subtotal</span><strong>{money(subtotal)}</strong><span>Tax · {((store?.tax_rate??0)*100).toFixed(2)}%</span><strong>{money(subtotal*(store?.tax_rate??0))}</strong></div><button className="primary full" disabled={busy||!cartRows.length} onClick={checkout}>{busy?"Processing…":"Complete sale"}</button></section></div>}
+          {module === "pos" && <div className="split-grid"><section className="panel"><div className="panel-heading"><div><h2>New sale</h2><p>Scan a printed barcode or add products by name.</p></div></div><label>Storefront<select value={selectedLocation} onChange={(e) => setSelectedLocation(e.target.value)}>{locations.filter((row) => row.location_type === "storefront").map((row) => <option key={row.id} value={row.id}>{row.name} · {(row.tax_rate*100).toFixed(2)}% tax</option>)}</select></label><label>Scan barcode<input value={barcode} onChange={(e) => setBarcode(e.target.value)} onKeyDown={(e) => { if(e.key==="Enter"){e.preventDefault();void scanBarcode(barcode);} }} placeholder="Scan or enter barcode, then press Enter" /></label><div className="product-grid">{items.filter((item) => item.item_type === "bike").map((item) => <button className="product-card" key={item.id} onClick={() => setCart((current) => ({...current,[item.id]:(current[item.id]??0)+1}))}><span>{item.name}</span><strong>{money(item.sale_price)}</strong><small>{item.sku}</small></button>)}</div></section><section className="panel"><h2>Current cart</h2>{cartRows.length ? cartRows.map((item)=><div className="cart-row" key={item.id}><span>{item.name}<small>{money(item.sale_price)} each</small></span><div><button aria-label={`Remove one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:Math.max(0,(c[item.id]??0)-1)}))}>−</button><b>{cart[item.id]}</b><button aria-label={`Add one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:(c[item.id]??0)+1}))}>+</button></div></div>):<p className="muted">Add a bike to begin.</p>}<label>Customer<select value={selectedCustomer} onChange={(e)=>setSelectedCustomer(e.target.value)}><option value="">Guest sale</option>{customers.map((customer)=><option key={customer.id} value={customer.id}>{customer.name} · {customer.email}</option>)}</select></label><label>Discount code<input value={discountCode} onChange={(e)=>setDiscountCode(e.target.value.toUpperCase())} placeholder="WRIGHTISCOOL" /></label><div className="totals"><span>Subtotal</span><strong>{money(subtotal)}</strong><span>Discount</span><strong>−{money(discountPreview)}</strong><span>Tax · {((store?.tax_rate??0)*100).toFixed(2)}%</span><strong>{money((subtotal-discountPreview)*(store?.tax_rate??0))}</strong><span>Total</span><strong>{money(subtotal-discountPreview+(subtotal-discountPreview)*(store?.tax_rate??0))}</strong></div><button className="primary full" disabled={busy||!cartRows.length} onClick={checkout}>{busy?"Processing…":"Complete sale"}</button><p className="footnote">The 15% code is first order only and is validated by the database at checkout.</p></section></div>}
           {module === "inventory" && <section className="panel"><div className="panel-heading"><div><h2>Inventory by location</h2><p>On hand, reserved, available, and weighted average value.</p></div><button className="secondary" onClick={refresh}>Refresh</button></div><Rows rows={inventory} columns={[["item_name","Item"],["location_name","Location"],["on_hand","On hand"],["reserved","Reserved"],["available","Available"],["inventory_value","Value"]]} moneyColumns={["inventory_value"]} /><p className="footnote">Staff can scan or enter a barcode in Point of sale. Cycle-count adjustment and transfer forms are next in the workflow.</p></section>}
           {module === "orders" && <section className="panel"><h2>Sales orders</h2><p className="muted">POS sales and online pickup orders appear here.</p><Rows rows={orders} columns={[["order_number","Order"],["status","Status"],["requested_at","Placed"],["total","Total"],["pickup","Pickup"]]} moneyColumns={["total"]} /></section>}
           {module === "mrp" && <section className="panel"><h2>Four-week material requirements</h2><p className="muted">Requirements are derived from confirmed orders, BOM quantities, stock, open POs, and component lead times.</p><Rows rows={mrp} columns={[["requirement_date","Need by"],["parent_item","Bike"],["component_item","Component"],["gross_requirement","Gross need"],["on_hand","On hand"],["open_purchase_quantity","On PO"],["suggested_order_quantity","Suggested order"],["order_by_date","Order by"]]} /></section>}

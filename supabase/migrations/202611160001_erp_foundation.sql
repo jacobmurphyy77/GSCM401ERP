@@ -616,21 +616,27 @@ begin
   insert into public.inventory_movements(item_id,location_id,quantity_delta,reason_code,reference_type,unit_cost,actor_id)
   select p_item_id,p_location_id,p_delta,upper(trim(p_reason)),'adjustment',average_cost,auth.uid()
   from public.inventory where item_id=p_item_id and location_id=p_location_id;
+  if p_delta<0 then
+    insert into public.financial_entries(entry_date,account,debit,credit,reference_type,reference_id)
+    select current_date,'Inventory Adjustment Expense',(-p_delta)*average_cost,0,'inventory_adjustment',gen_random_uuid()
+    from public.inventory where item_id=p_item_id and location_id=p_location_id;
+  end if;
   return v_on_hand;
 end;
 $$;
 
 create function public.transfer_inventory(p_item_id uuid,p_from uuid,p_to uuid,p_quantity integer)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_cost numeric(12,2);
+declare v_cost numeric(12,2); v_target_qty integer; v_target_cost numeric(12,2);
 begin
   if not public.is_staff() then raise exception 'Staff access required'; end if;
   if p_quantity<=0 or p_from=p_to then raise exception 'Choose two locations and a positive quantity'; end if;
   select average_cost into v_cost from public.inventory where item_id=p_item_id and location_id=p_from for update;
   if not found or (select on_hand-reserved from public.inventory where item_id=p_item_id and location_id=p_from)<p_quantity then raise exception 'Insufficient available inventory'; end if;
-  perform 1 from public.inventory where item_id=p_item_id and location_id=p_to for update;
+  select on_hand,average_cost into v_target_qty,v_target_cost from public.inventory where item_id=p_item_id and location_id=p_to for update;
+  if not found then raise exception 'Destination inventory record not found'; end if;
   update public.inventory set on_hand=on_hand-p_quantity,updated_at=now() where item_id=p_item_id and location_id=p_from;
-  update public.inventory set on_hand=on_hand+p_quantity,average_cost=v_cost,updated_at=now() where item_id=p_item_id and location_id=p_to;
+  update public.inventory set on_hand=on_hand+p_quantity,average_cost=round((v_target_qty*v_target_cost+p_quantity*v_cost)/(v_target_qty+p_quantity),2),updated_at=now() where item_id=p_item_id and location_id=p_to;
   insert into public.inventory_movements(item_id,location_id,quantity_delta,reason_code,reference_type,unit_cost,actor_id)
   values(p_item_id,p_from,-p_quantity,'LOCATION_TRANSFER','transfer',v_cost,auth.uid()),
         (p_item_id,p_to,p_quantity,'LOCATION_TRANSFER','transfer',v_cost,auth.uid());
@@ -706,3 +712,35 @@ revoke all on function public.transfer_inventory(uuid,uuid,uuid,integer) from pu
 revoke all on function public.receive_purchase_order(uuid,uuid,integer) from public,anon;
 revoke all on function public.complete_production_order(uuid,integer,integer,text) from public,anon;
 grant execute on function public.adjust_inventory(uuid,uuid,integer,text), public.transfer_inventory(uuid,uuid,uuid,integer), public.receive_purchase_order(uuid,uuid,integer), public.complete_production_order(uuid,integer,integer,text) to authenticated;
+
+create function public.process_return(
+  p_order_id uuid,p_item_id uuid,p_location_id uuid,p_quantity integer,p_reason_code text,p_disposition text
+) returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_line public.sales_order_lines%rowtype; v_order public.sales_orders%rowtype; v_returned integer; v_refund numeric(12,2); v_cost numeric(12,2); v_return_id uuid:=gen_random_uuid();
+begin
+  if not public.is_staff() then raise exception 'Staff access required'; end if;
+  if p_quantity<=0 or nullif(trim(p_reason_code),'') is null then raise exception 'Enter quantity and a return reason'; end if;
+  if p_disposition not in ('restock','quarantine','scrap','exchange') then raise exception 'Choose a valid disposition'; end if;
+  select * into v_order from public.sales_orders where id=p_order_id and status in ('fulfilled','closed');
+  select * into v_line from public.sales_order_lines where order_id=p_order_id and item_id=p_item_id for update;
+  if not found then raise exception 'No fulfilled line matches this return'; end if;
+  select coalesce(sum(quantity),0)::integer into v_returned from public.returns where order_id=p_order_id and item_id=p_item_id;
+  if v_returned+p_quantity>v_line.fulfilled_quantity then raise exception 'Return quantity exceeds quantity sold'; end if;
+  v_refund:=round(p_quantity*v_line.unit_price*(1-case when v_order.subtotal=0 then 0 else v_order.discount_amount/v_order.subtotal end)*(1+(case when v_order.subtotal=0 then 0 else v_order.tax_amount/(v_order.subtotal-v_order.discount_amount) end)),2);
+  v_cost:=p_quantity*v_line.unit_cost;
+  insert into public.returns(id,order_id,item_id,location_id,quantity,reason_code,disposition,refund_amount,unit_cost,created_by)
+    values(v_return_id,p_order_id,p_item_id,p_location_id,p_quantity,upper(trim(p_reason_code)),p_disposition,v_refund,v_line.unit_cost,auth.uid());
+  if p_disposition in ('restock','exchange') then
+    update public.inventory set on_hand=on_hand+p_quantity,updated_at=now() where item_id=p_item_id and location_id=p_location_id;
+    insert into public.inventory_movements(item_id,location_id,quantity_delta,reason_code,reference_type,reference_id,unit_cost,actor_id)
+      values(p_item_id,p_location_id,p_quantity,'CUSTOMER_RETURN','return',v_return_id,v_line.unit_cost,auth.uid());
+    insert into public.financial_entries(entry_date,account,debit,credit,reference_type,reference_id)
+      values(current_date,'Cost of Goods Sold',0,v_cost,'return_cogs',v_return_id);
+  end if;
+  insert into public.financial_entries(entry_date,account,debit,credit,reference_type,reference_id)
+    values(current_date,'Revenue',v_refund,0,'return_revenue',v_return_id);
+  return jsonb_build_object('return_id',v_return_id,'refund_amount',v_refund,'returned_to_stock',p_disposition in ('restock','exchange'));
+end;
+$$;
+revoke all on function public.process_return(uuid,uuid,uuid,integer,text,text) from public,anon;
+grant execute on function public.process_return(uuid,uuid,uuid,integer,text,text) to authenticated;
