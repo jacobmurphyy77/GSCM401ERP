@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { assetPath, isEmployeeRole, money, productPresentation, componentFamily, compatibleBikeName, PickupLocation } from "@/src/lib/storefront";
+import { assetPath, isEmployeeRole, money, productPresentation, componentFamily, compatibleBikeName, partProductName, partPriceLabel, PickupLocation } from "@/src/lib/storefront";
 import { Brand } from "./brand";
 import { Icon } from "./icon";
 import { Modal } from "./modal";
@@ -59,7 +59,7 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
       </>}
     </Modal>
 
-    <Modal title={detail?.name ?? "Bike details"} open={Boolean(detail)} onClose={() => setDetail(null)} wide>
+    <Modal title={detail ? detail.item_type === "component" && !shop.selectedPartsBike ? partProductName(detail) : detail.name : "Product details"} open={Boolean(detail)} onClose={() => setDetail(null)} wide>
       {detail && <ProductDetails shop={shop}/>}
     </Modal>
   </>;
@@ -78,13 +78,25 @@ function ProductDetails({ shop }: { shop: StorefrontModel }) {
   const family = componentFamily(detail);
   const variants = detail.item_type === "component" && family ? shop.parts.filter((part) => componentFamily(part) === family && part.compatible_bike_id) : [];
   const needsFit = variants.length > 0 && (!detail.compatible_bike_id || shop.selectedPartsBike !== detail.compatible_bike_id);
-  const fitName = compatibleBikeName(detail, shop.items);
+  const fitName = needsFit ? null : compatibleBikeName(detail, shop.items);
   function chooseFit(bikeId: string) {
     shop.setSelectedPartsBike(bikeId);
     const variant = variants.find((part) => part.compatible_bike_id === bikeId);
     if (variant) shop.setDetail(variant);
   }
-  return <div className="product-detail-layout"><Image src={assetPath(productPresentation(detail).image)} alt={`${detail.name} illustrative product image`} width={1200} height={800} unoptimized/><div><p className="store-kicker">{productPresentation(detail).category}</p><h3>{detail.compatible_bike_id ? detail.name : productPresentation(detail).caption}</h3>{fitName && <p className="part-compatibility-label"><Icon name="check" size={14}/>Designed for {fitName}</p>}<p className="detail-price">{Number(detail.sale_price) > 0 ? money(detail.sale_price) : "Not available to order yet"}</p><p className="product-availability"><i/>{shop.availability(detail)}</p>{variants.length > 0 && <label className="store-field part-detail-fit">Choose bike fit<select value={shop.selectedPartsBike === detail.compatible_bike_id ? detail.compatible_bike_id ?? "" : ""} onChange={(event) => chooseFit(event.target.value)}><option value="">Choose the bike this part is for</option>{variants.map((part) => <option key={part.id} value={part.compatible_bike_id ?? ""}>{compatibleBikeName(part, shop.items) ?? part.name}</option>)}</select></label>}{detail.item_type === "component" && !detail.compatible_bike_id && !variants.length && <p className="parts-fit-help">General component. Specific bike compatibility has not been recorded; confirm fit with the store.</p>}<label className="store-field">Pickup store<select value={shop.selectedLocation} onChange={(event) => shop.setSelectedLocation(event.target.value)}>{shop.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><button className="store-button" disabled={Number(detail.sale_price) <= 0 || needsFit} onClick={() => { shop.addToCart(detail); shop.setDetail(null); shop.setCartOpen(true); }}>{needsFit ? "Choose bike fit first" : "Add to bag"}<Icon name="bag"/></button><small className="cart-fineprint">Product imagery is illustrative. Sales tax is calculated for the selected pickup store.</small></div><BuildConnections shop={shop}/></div>;
+  return <div className="product-detail-layout">
+    <Image src={assetPath(productPresentation(detail).image)} alt={`${needsFit ? partProductName(detail) : detail.name} illustrative product image`} width={1200} height={800} unoptimized/>
+    <div><p className="store-kicker">{productPresentation(detail).category}</p><h3>{needsFit ? partProductName(detail) : detail.name}</h3>
+      {fitName && <p className="part-compatibility-label"><Icon name="check" size={14}/>Designed for {fitName}</p>}
+      <p className="detail-price" aria-live="polite">{needsFit ? partPriceLabel(variants) : Number(detail.sale_price) > 0 ? money(detail.sale_price) : "Not available to order yet"}</p>
+      {variants.length > 0 && <label className="store-field part-detail-fit">Choose bike fit<select value={needsFit ? "" : detail.compatible_bike_id ?? ""} onChange={(event) => chooseFit(event.target.value)}><option value="">Choose the bike this part is for</option>{variants.map((part) => <option key={part.id} value={part.compatible_bike_id ?? ""}>{compatibleBikeName(part, shop.items) ?? part.name} · {money(part.sale_price)}</option>)}</select></label>}
+      <p className="product-availability" aria-live="polite">{needsFit ? "Select your bike to check its price and pickup availability." : <><i/>{shop.availability(detail)}</>}</p>
+      {detail.item_type === "component" && !detail.compatible_bike_id && !variants.length && <p className="parts-fit-help">General component. Specific bike compatibility has not been recorded; confirm fit with the store.</p>}
+      <label className="store-field">Pickup store<select value={shop.selectedLocation} onChange={(event) => shop.setSelectedLocation(event.target.value)}>{shop.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+      <button className="store-button" disabled={Number(detail.sale_price) <= 0 || needsFit || shop.catalogError || !shop.store} onClick={() => { shop.addToCart(detail); shop.setDetail(null); shop.setCartOpen(true); }}>{needsFit ? "Choose bike fit first" : "Add to bag"}<Icon name="bag"/></button>
+      <small className="cart-fineprint">Product imagery is illustrative. Sales tax is calculated for the selected pickup store.</small>
+    </div>{!needsFit && <BuildConnections shop={shop}/>}
+  </div>;
 }
 
 function BuildConnections({ shop }: { shop: StorefrontModel }) {
@@ -92,12 +104,12 @@ function BuildConnections({ shop }: { shop: StorefrontModel }) {
   if (!detail) return null;
   if (detail.item_type === "component") {
     const bikes = shop.bom.filter((line) => line.component_item_id === detail.id).map((line) => shop.bikes.find((item) => item.id === line.parent_item_id)).filter((item) => Boolean(item));
-    return <section className="bom-connections"><h3>Used in our bike builds</h3><p>These relationships come from the bike’s bill of materials.</p><div className="used-in-bikes">{bikes.map((bike) => bike && <button key={bike.id} onClick={() => shop.setDetail(bike)}>{bike.name}</button>)}</div></section>;
+    return <section className="bom-connections"><h3>Used in our bike builds</h3><p>These relationships come from the bike’s bill of materials.</p><div className="used-in-bikes">{bikes.map((bike) => bike && <button key={bike.id} onClick={() => shop.openProduct(bike)}>{bike.name}</button>)}</div></section>;
   }
   const lines = shop.bom.filter((line) => line.parent_item_id === detail.id);
   return <section className="bom-connections"><h3>Parts for this bike</h3><p>Shop the components used to build this bike. Quantities show the parts needed for a complete build.</p><div className="bom-parts">{lines.map((line) => {
     const part = shop.parts.find((item) => item.id === line.component_item_id);
     if (!part) return null;
-    return <button key={part.id} onClick={() => shop.setDetail(part)}><Image src={assetPath(productPresentation(part).image)} alt="" width={100} height={70} unoptimized/><span>{part.name}<small>{line.quantity_per} per bike · {Number(part.sale_price) > 0 ? money(part.sale_price) : "Pricing pending"}</small></span><Icon name="arrow" size={16}/></button>;
+    return <button key={part.id} onClick={() => shop.openProduct(part)}><Image src={assetPath(productPresentation(part).image)} alt="" width={100} height={70} unoptimized/><span>{part.name}<small>{line.quantity_per} per bike · {Number(part.sale_price) > 0 ? money(part.sale_price) : "Pricing pending"}</small></span><Icon name="arrow" size={16}/></button>;
   })}</div></section>;
 }

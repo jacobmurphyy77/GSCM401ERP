@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/src/lib/supabase/client";
-import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock, componentFamily, partFamilyLabels, partsForBike, retailParts } from "@/src/lib/storefront";
+import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock, componentFamily, partFamilyLabels, partCollections, retailParts } from "@/src/lib/storefront";
 
 import { cancelOrderCheckout, cartMatchesOrder, checkoutAttempt, checkoutFingerprint, CheckoutReply, orderCheckoutRequest } from "@/src/lib/checkout";
 
@@ -189,11 +189,12 @@ export function useStorefront() {
   const parts = retailParts(items);
   const hasSpecificParts = parts.some((item) => Boolean(item.compatible_bike_id));
   const partFamilies = Object.keys(partFamilyLabels).filter((family) => parts.some((item) => componentFamily(item) === family));
-  const visibleParts = partsForBike(parts, selectedPartsBike, selectedPartFamily);
+  const visibleParts = partCollections(items, selectedPartFamily);
   const categories = ["All bikes", ...Array.from(new Set(bikes.map((item) => productPresentation(item).category)))];
   const visibleItems = category === "All bikes" ? bikes : bikes.filter((item) => productPresentation(item).category === category);
 
-  function addToCart(item: CatalogItem) { if (item.compatible_bike_id && selectedPartsBike !== item.compatible_bike_id) { setDetail(item); setNotice("Choose the bike this part needs to fit before adding it to your bag."); return; } if (Number(item.sale_price) <= 0) { setNotice("This product is not available to order yet."); return; } setCart((current) => ({ ...current, [item.id]: (current[item.id] ?? 0) + 1 })); setNotice(`${item.name} added to your bag.`); }
+  function openProduct(item: CatalogItem) { setSelectedPartsBike(""); setDetail(item); }
+  function addToCart(item: CatalogItem) { if (item.compatible_bike_id && selectedPartsBike !== item.compatible_bike_id) { openProduct(item); setNotice("Choose the bike this part needs to fit before adding it to your bag."); return; } if (Number(item.sale_price) <= 0) { setNotice("This product is not available to order yet."); return; } setCart((current) => ({ ...current, [item.id]: (current[item.id] ?? 0) + 1 })); setNotice(`${item.name} added to your bag.`); }
   function changeQuantity(itemId: string, quantity: number) { setCart((current) => { const next = { ...current }; if (quantity > 0) next[itemId] = quantity; else delete next[itemId]; return next; }); }
   function openAuth(intent: "account" | "checkout" = "account") { setAuthIntent(intent); setAuthMode("login"); setAuthError(""); setAuthMessage(""); setCartOpen(false); setAccountOpen(false); }
 
@@ -320,7 +321,7 @@ export function useStorefront() {
   return { items, bikes, parts, hasSpecificParts, partFamilies, visibleParts, selectedPartsBike, setSelectedPartsBike, selectedPartFamily, setSelectedPartFamily, orderUpdatesConnected, bom, allLocations, locations, stock, promotion, catalogLoading, catalogError, selectedLocation, setSelectedLocation, category, setCategory,
     cart, cartOpen, setCartOpen, discountCode, setDiscountCode, appliedCode, discountPercent, cartMessage, detail, setDetail, session, authReady, role,
     accountOpen, setAccountOpen, accountLoading, accountError, accountMessage, checkoutRecovery, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
-    setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, addToCart, changeQuantity,
+    setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, openProduct, addToCart, changeQuantity,
     openAuth, authenticate, applyDiscount, checkout, resumeOrder, cancelOrder, showUnfinishedOrders, signOut, availability };
 }
 

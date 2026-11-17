@@ -80,9 +80,9 @@ test("employee task queues, generated labels, inventory scanner, reports and man
   page.on("pageerror", (error) => errors.push(error.message));
   const unexpected = await employee(page);
   await expect(page.getByText("demo data - figures are computed", { exact: false })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Sales orders: [1-9]\d* tasks/ })).toBeVisible();
-  await page.getByRole("button", { name: /Sales orders: \d+ tasks/ }).click();
-  await expect(page.getByRole("dialog", { name: "Sales orders · work queue" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Overview: [1-9]\d* tasks/ })).toBeVisible();
+  await page.getByRole("button", { name: /Overview: \d+ tasks/ }).click();
+  await expect(page.getByRole("dialog", { name: "Overview · work queue" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Prepare order/ })).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: /^Close / }).click();
   await page.getByRole("button", { name: "Barcode labels", exact: true }).click();
@@ -131,15 +131,35 @@ test("employee task queues, generated labels, inventory scanner, reports and man
 test("customer chooses compatible parts and sees the stored paid order journey", async ({ page }) => {
   const unexpected = await setup(page);
   await page.goto("/GSCM401ERP/");
-  await expect(page.getByText("A part that fits your ride.", { exact: true })).toBeVisible();
   const parts = page.locator("#parts");
-  await expect(parts.locator(".retail-product")).toHaveCount(0);
-  await parts.getByLabel("Which bike does your part need to fit?").selectOption({ label: "Mountain Bike" });
-  await expect(parts.locator(".retail-product")).toHaveCount(8); // Seven model-specific components plus one explicitly generic fixture cable.
+  await expect(parts.locator(".retail-product")).toHaveCount(8); // Seven part families plus one explicitly generic fixture cable.
   await parts.getByLabel("Part category").selectOption("SEAT");
   await expect(parts.locator(".retail-product")).toHaveCount(1);
-  await expect(parts.getByText("Trail Support Saddle", { exact: true })).toBeVisible();
+  await parts.getByRole("button", { name: "View Saddle", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Saddle", exact: true }).getByRole("button", { name: "Choose bike fit first" })).toBeDisabled();
+  const kids=data.items.find(item=>item.sku==='BIKE-KIDS')!;
+  const mountain=data.items.find(item=>item.sku==='BIKE-MOUNTAIN')!;
+  await page.getByLabel("Choose bike fit").selectOption(String(kids.id));
+  await expect(page.getByRole("dialog", { name: "Youth Comfort Saddle", exact: true }).locator('.detail-price')).toHaveText('$10.08');
+  await page.getByRole("dialog").getByRole("button", { name: "Add to bag", exact: true }).click();
+  let bag=page.getByRole('dialog',{name:'Your bag',exact:true});
+  await expect(bag).toContainText('Youth Comfort Saddle');
+  await expect(bag).toContainText('Fits Kids Bike');
+  await bag.getByRole('button',{name:/^Close /}).click();
+  await parts.getByRole("button", { name: "View Saddle", exact: true }).click();
+  await expect(page.getByLabel("Choose bike fit")).toHaveValue('');
+  await expect(page.getByRole("button", { name: "Choose bike fit first" })).toBeDisabled();
+  await page.getByLabel("Choose bike fit").selectOption(String(mountain.id));
+  await expect(page.getByRole("dialog", { name: "Trail Support Saddle", exact: true }).locator('.detail-price')).toHaveText('$46.46');
   await page.screenshot({ path: "/workspace/shared/mock-storefront-fit-desktop.png", fullPage: true });
+  await page.getByRole("dialog").getByRole("button", { name: "Add to bag", exact: true }).click();
+  bag=page.getByRole('dialog',{name:'Your bag',exact:true});
+  await expect(bag.locator('.retail-cart-item')).toHaveCount(2);
+  await expect(bag).toContainText('Trail Support Saddle');
+  await expect(bag).toContainText('Fits Mountain Bike');
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('wcw-cart')??'{}'));
+  expect(Object.keys(saved).sort()).toEqual(data.items.filter(item=>['PART-SEAT-KIDS','PART-SEAT-MOUNTAIN'].includes(String(item.sku))).map(item=>String(item.id)).sort());
+  await bag.getByRole('button',{name:/^Close /}).click();
   await page.getByRole("button", { name: "My account and orders", exact: true }).click();
   const account = page.getByRole("dialog", { name: "My account & orders" });
   await expect(account.getByText(`Order ${fixture.customerOrderNumber}`, { exact: true })).toBeVisible();

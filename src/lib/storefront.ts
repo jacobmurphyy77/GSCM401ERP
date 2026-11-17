@@ -87,6 +87,29 @@ const presentation: Record<string, { image: string; category: string; caption: s
 };
 
 export const partFamilyLabels: Record<string, string> = { FRAME: "Frames", WHEEL: "Wheels", TIRE: "Tires", BRAKE: "Brakes", DRIVE: "Drivetrain", SEAT: "Saddles", BAR: "Handlebars" };
+const partNames: Record<string, string> = { FRAME: "Bicycle Frame", WHEEL: "Bicycle Wheel", TIRE: "Bicycle Tire", BRAKE: "Brake Set", DRIVE: "Drivetrain", SEAT: "Saddle", BAR: "Handlebar" };
+
+export function partProductName(item: CatalogItem) {
+  return partNames[componentFamily(item) ?? ""] ?? item.name;
+}
+
+export function partPriceLabel(items: CatalogItem[]) {
+  const prices = items.map((item) => Number(item.sale_price)).filter((price) => Number.isFinite(price) && price > 0);
+  if (!prices.length) return "Not available yet";
+  const low = Math.min(...prices), high = Math.max(...prices);
+  return low === high ? money(low) : `${money(low)} – ${money(high)}`;
+}
+
+export function partCollections(items: CatalogItem[], family = "") {
+  const groups = new Map<string, CatalogItem[]>();
+  for (const part of retailParts(items)) {
+    const partFamily = componentFamily(part);
+    if (family && partFamily !== family) continue;
+    const key = partFamily ?? part.id;
+    groups.set(key, [...(groups.get(key) ?? []), part]);
+  }
+  return [...groups].map(([key, variants]) => ({ key, name: partProductName(variants[0]), variants }));
+}
 
 export function componentFamily(item: CatalogItem): string | null {
   if (item.item_type !== "component") return null;
@@ -98,12 +121,6 @@ export function retailParts(items: CatalogItem[]) {
   const components = items.filter((item) => item.item_type === "component");
   const specificFamilies = new Set(components.filter((item) => item.compatible_bike_id).map(componentFamily));
   return components.filter((item) => item.compatible_bike_id || !specificFamilies.has(componentFamily(item)));
-}
-
-export function partsForBike(parts: CatalogItem[], bikeId: string, family = "") {
-  const bikeSelectionRequired = parts.some((item) => item.compatible_bike_id);
-  if (bikeSelectionRequired && !bikeId) return [];
-  return parts.filter((item) => (!item.compatible_bike_id || item.compatible_bike_id === bikeId) && (!family || componentFamily(item) === family));
 }
 
 export function compatibleBikeName(item: CatalogItem, items: CatalogItem[]) {

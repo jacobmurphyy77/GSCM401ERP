@@ -133,3 +133,62 @@ test("retail variants use approved prices and the same city warehouse bins as pr
     assert.equal((await stock(wheel)).reserved, before.reserved);
   } finally { await db.close(); }
 });
+
+test("model part pricing balances every BOM to its bike cost, uses 50% markup and preserves historical values", async () => {
+  const db = await database();
+  try {
+    await db.exec(variants);
+    await db.exec(migration("202611170005_operations_workflows.sql"));
+    const store = (await one(db,"select id from public.locations where name='Logan Storefront'")).id;
+    const warehouse = (await one(db,"select id from public.locations where name='Logan Warehouse'")).id;
+    const saddle = (await one(db,"select id from public.items where sku='PART-SEAT-STREET'")).id;
+    const bike = (await one(db,"select id from public.items where sku='BIKE-STREET'")).id;
+    await as(db,"authenticated");
+    await db.query("select public.checkout_pos($1,null,$2::jsonb,null)",[store,JSON.stringify([{item_id:saddle,quantity:1}])]);
+    await db.query("select public.create_production_order($1,$2,1)",[bike,warehouse]);
+    await db.exec("reset role");
+    const snapshot = async () => Promise.all([
+      db.query("select * from public.inventory order by item_id,location_id"),
+      db.query("select * from public.sales_order_lines order by id"),
+      db.query("select * from public.financial_entries order by id"),
+      db.query("select * from public.production_order_components order by production_order_id,component_item_id"),
+      db.query("select id,standard_cost,sale_price from public.items where compatible_bike_id is null order by id"),
+    ]).then(results=>results.map(result=>result.rows));
+    const before = await snapshot();
+    const pricing = migration("202611170006_model_part_pricing.sql");
+    await db.exec(pricing);
+    assert.deepEqual(await snapshot(),before,"existing stock costs, sale prices, ledger and work recipes are unchanged");
+    const parts = (await db.query(`select part.sku,part.component_family,part.standard_cost,part.sale_price,bike.sku as bike,
+      bike.standard_cost as parent_cost,b.quantity_per from public.items part join public.items bike on bike.id=part.compatible_bike_id
+      join public.bom_lines b on b.parent_item_id=bike.id and b.component_item_id=part.id where part.active`)).rows;
+    assert.equal(parts.length,35);
+    for (const bikeSku of new Set(parts.map(part=>part.bike))) {
+      const rows=parts.filter(part=>part.bike===bikeSku);
+      assert.equal(rows.reduce((sum,part)=>sum+Math.round(Number(part.standard_cost)*100)*Number(part.quantity_per),0),Math.round(Number(rows[0].parent_cost)*100));
+      for (const part of rows) assert.equal(Math.round(Number(part.sale_price)*100),Math.round(Math.round(Number(part.standard_cost)*100)*1.5));
+    }
+    assert.equal(Number(parts.find(part=>part.sku==='PART-SEAT-STREET').standard_cost),20.78);
+    assert.equal(Number(parts.find(part=>part.sku==='PART-SEAT-STREET').sale_price),31.17);
+    assert.equal(Number(parts.find(part=>part.sku==='PART-SEAT-KIDS').standard_cost),6.72);
+    assert.equal(Number(parts.find(part=>part.sku==='PART-SEAT-KIDS').sale_price),10.08);
+    const audit=await one(db,"select details from public.catalog_migrations where migration_key='bike-model-part-pricing-v1'");
+    assert.equal(audit.details.prices.length,35);
+    assert.equal(audit.details.items_updated,35);
+    const priced=await db.query("select id,standard_cost,sale_price from public.items order by id");
+    await db.exec(pricing);
+    assert.deepEqual((await db.query("select id,standard_cost,sale_price from public.items order by id")).rows,priced.rows,"a migration retry does not compound the allocation");
+  } finally { await db.close(); }
+});
+
+test("invalid bike cost blocks the entire repricing without partial changes", async () => {
+  const db=await database();
+  try {
+    await db.exec(variants);
+    await db.exec("update public.items set standard_cost=0 where sku='BIKE-KIDS'");
+    const before=(await db.query("select id,standard_cost,sale_price from public.items order by id")).rows;
+    await assert.rejects(db.exec(migration("202611170006_model_part_pricing.sql")),/Each active bike needs a positive stored cost/);
+    await db.exec("rollback");
+    assert.deepEqual((await db.query("select id,standard_cost,sale_price from public.items order by id")).rows,before);
+    assert.equal((await one(db,"select count(*)::int as n from public.catalog_migrations where migration_key='bike-model-part-pricing-v1'")).n,0);
+  } finally { await db.close(); }
+});

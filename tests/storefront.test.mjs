@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/lib/storefront.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
-const { availableStock, calculateCart, isEmployeeRole, parseSavedCart, retailStockLocation, componentFamily, compatibleBikeName, productPresentation, retailParts, partsForBike } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
+const { availableStock, calculateCart, isEmployeeRole, parseSavedCart, retailStockLocation, componentFamily, compatibleBikeName, productPresentation, retailParts, partCollections, partPriceLabel } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
 
 const id = "12345678-1234-1234-1234-123456789abc";
 const secondId = "87654321-4321-4321-4321-cba987654321";
@@ -101,12 +101,14 @@ test("retail hides superseded generic families and preserves legacy-only catalog
   assert.deepEqual(catalog.filter((item) => componentFamily(item) === "SEAT").map((item) => item.id), ["street-seat", "kids-seat"]);
 });
 
-test("customers choose a bike before browsing specific components and category filters preserve that fit", () => {
-  const parts = retailParts([genericSaddle, streetSaddle, kidsSaddle, streetBars]);
-  assert.deepEqual(partsForBike(parts, ""), []);
-  assert.deepEqual(partsForBike(parts, secondId).map((item) => item.id), ["kids-seat"]);
-  assert.deepEqual(partsForBike(parts, id, "BAR").map((item) => item.id), ["street-bar"]);
-  assert.deepEqual(partsForBike([genericSaddle], ""), [genericSaddle]);
+test("customers browse one card per part family before choosing a bike-specific SKU", () => {
+  const groups = partCollections([genericSaddle, streetSaddle, kidsSaddle, streetBars]);
+  assert.deepEqual(groups.map((group) => group.name), ["Saddle", "Handlebar"]);
+  assert.deepEqual(groups[0].variants.map((part) => part.id), ["street-seat", "kids-seat"]);
+  assert.deepEqual(partCollections([streetSaddle, kidsSaddle, streetBars], "BAR")[0].variants, [streetBars]);
+  assert.deepEqual(partCollections([genericSaddle])[0].variants, [genericSaddle]);
+  assert.equal(partPriceLabel([{ ...streetSaddle, sale_price: 31.17 }, { ...kidsSaddle, sale_price: 10.08 }]), "$10.08 – $31.17");
+  assert.equal(partPriceLabel([streetSaddle, kidsSaddle]), "$36.00");
 });
 
 test("different bike fits remain separate stored cart lines with their own item IDs", () => {

@@ -5,15 +5,17 @@
 .nav-entry.active { background: #344552; }
 .nav-entry .nav-item { flex: 1; min-width: 0; padding: .65rem .65rem; }
 .nav-entry .nav-item.selected { background: transparent; }
-.task-badge { min-width: 25px; height: 25px; border: 1px solid #516170; border-radius: 8px; background: #303d48; color: #d5e2ec; font-size: 11px; margin-right: .45rem; }
-.task-badge.urgent { background: #5b453a; border-color: #80634e; color: #ffe2b7; }
-.workflow-total { background: #edf2f6; color: #49677e; padding: .7rem .9rem; border-radius: 10px; font-size: .8rem; white-space: nowrap; }
+.task-badge { min-width: 28px; min-height: 32px; padding: .2rem .35rem; border: 0; border-radius: 0; background: transparent; color: #b8cbd9; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; margin-right: .45rem; }
+.task-badge.urgent { color: #e8bc94; }
+.task-badge:hover { background: transparent; color: white; }
+.task-badge:focus-visible { outline: 2px solid #b8cbd9; outline-offset: 1px; }
+.workflow-total { color: #49677e; font-size: .8rem; white-space: nowrap; }
 .workflow-steps { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: .7rem; }
 .workflow-steps button { position: relative; display: grid; gap: .7rem; padding: 1rem; border: 1px solid #dde5eb; border-radius: 12px; background: linear-gradient(160deg,#fafcfd,#f0f4f7); text-align: left; color: #293945; }
 .workflow-steps button > span { color: #54758e; font-size: .7rem; text-transform: uppercase; letter-spacing: .07em; }
 .workflow-steps strong { font-size: .88rem; }
 .workflow-steps small { color: #71818f; line-height: 1.6; font-size: .75rem; }
-.workflow-steps b { justify-self: end; color: #6e8ba0; }
+.workflow-steps b { justify-self: end; color: #6e8ba0; transform: rotate(-45deg); }
 .workflow-priorities { display: grid; margin-top: 1.2rem; }
 .workflow-priorities button { display: flex; align-items: center; gap: .8rem; border: 0; border-top: 1px solid #edf0f3; padding: .85rem 0; background: white; text-align: left; color: #354653; }
 .workflow-priorities button > span:nth-child(2) { flex: 1; }
