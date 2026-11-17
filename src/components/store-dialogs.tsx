@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useState } from "react";
 import Link from "next/link";
 import { assetPath, isEmployeeRole, money, productPresentation, componentFamily, compatibleBikeName, partProductName, partPriceLabel, PickupLocation } from "@/src/lib/storefront";
 import { Brand } from "./brand";
@@ -54,8 +55,9 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
         {isEmployeeRole(role) && <Link className="workspace-shortcut" href="/employee">Open employee workspace <Icon name="arrow" size={18}/></Link>}
         {accountError && <p className="store-message error" role="alert">{accountError}</p>}
         {accountMessage && <p className="store-message" role="status">{accountMessage}</p>}
+        <p className="cart-fineprint">Journeys refresh automatically every few seconds while this panel is open. Completed orders remain in your account.</p>
         <div className="account-orders-heading"><h3>Your orders</h3><button onClick={() => void shop.loadAccount(session.user.id)} disabled={accountLoading}>{accountLoading ? "Refreshing…" : "Refresh orders"}</button></div>
-        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order) => <OrderDetails key={order.id} order={order} location={locations.find((location) => location.id === order.location_id)} realtimeConnected={shop.orderUpdatesConnected} busy={busy} onResume={() => void shop.resumeOrder(order)} onCancel={() => void shop.cancelOrder(order)}/>)}</div>}
+        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order,index) => <OrderDetails key={order.id} initiallyOpen={index===0 || order.payment_status==="unpaid"&&order.status==="placed"} order={order} location={locations.find((location) => location.id === order.location_id)} realtimeConnected={shop.orderUpdatesConnected&&!accountError} busy={busy} onResume={() => void shop.resumeOrder(order)} onCancel={() => void shop.cancelOrder(order)}/>)}</div>}
       </>}
     </Modal>
 
@@ -65,10 +67,11 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
   </>;
 }
 
-function OrderDetails({ order, location, realtimeConnected, busy, onResume, onCancel }: { order: CustomerOrder; location?: PickupLocation; realtimeConnected: boolean; busy: boolean; onResume: () => void; onCancel: () => void }) {
-  return <details className="customer-order" open={order.payment_status === "unpaid" && order.status === "placed"}><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && (order.checkout_request_id || order.stripe_checkout_session_id) && <><p>This order is still open{order.discount_code ? ` with code ${order.discount_code}` : ""}. Removing items from your bag does not cancel it.</p><div className="customer-order-actions">{order.checkout_request_id && <button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button>}<button className="store-button order-action-secondary" disabled={busy} onClick={onCancel}>Cancel unpaid order</button></div></>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
+function OrderDetails({ order, location, realtimeConnected, busy, onResume, onCancel, initiallyOpen }: { order: CustomerOrder; location?: PickupLocation; realtimeConnected: boolean; busy: boolean; onResume: () => void; onCancel: () => void; initiallyOpen: boolean }) {
+  const [expanded,setExpanded]=useState(initiallyOpen);
+  return <details className="customer-order" open={expanded} onToggle={(event)=>setExpanded(event.currentTarget.open)}><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><CustomerOrderTracking order={order} location={location} realtimeConnected={realtimeConnected}/><h4>Order receipt</h4><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && (order.checkout_request_id || order.stripe_checkout_session_id) && <><p>This order is still open{order.discount_code ? ` with code ${order.discount_code}` : ""}. Removing items from your bag does not cancel it.</p><div className="customer-order-actions">{order.checkout_request_id && <button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button>}<button className="store-button order-action-secondary" disabled={busy} onClick={onCancel}>Cancel unpaid order</button></div></>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
     <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(order.subtotal)}</dd></div>{Number(order.discount_amount) > 0 && <div><dt>Discount</dt><dd>−{money(order.discount_amount)}</dd></div>}<div><dt>Sales tax</dt><dd>{money(order.tax_amount)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(order.total)}</dd></div></dl>
-    <CustomerOrderTracking order={order} location={location} realtimeConnected={realtimeConnected}/>
+
   </div></details>;
 }
 

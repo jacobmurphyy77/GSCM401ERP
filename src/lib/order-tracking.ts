@@ -25,7 +25,7 @@ export type OrderTrackingView = {
   title: string;
   description: string;
   tone: "normal" | "success" | "attention" | "muted";
-  phase: "unpaid" | "confirmed" | "preparing" | "backorder" | "in_transit" | "ready" | "complete" | "cancelled" | "refunded" | "exception";
+  phase: "unpaid" | "confirmed" | "preparing" | "fulfilled" | "packed" | "backorder" | "in_transit" | "ready" | "complete" | "cancelled" | "refunded" | "exception";
   stageIndex: number;
   milestones: TrackingMilestone[];
   events: (TrackingEvent & { trackingCode: string | null })[];
@@ -60,6 +60,7 @@ export function deriveOrderTracking(order: OrderTrackingData): OrderTrackingView
   const awaitingUnits = reservationsKnown ? Math.max(0, units - reservedUnits! - fulfilledUnits!) : null;
   const paid = order.payment_status === "paid";
   const terminal = order.status === "cancelled" || order.payment_status === "refunded";
+  const closedWithoutPayment=order.status==="closed"&&!paid&&order.payment_status!=="refunded";
   const completed = order.status === "closed" || shipment?.status === "delivered";
   const ready = shipment?.status === "ready_for_pickup";
   const exception = shipment?.status === "exception";
@@ -76,8 +77,16 @@ export function deriveOrderTracking(order: OrderTrackingData): OrderTrackingView
     title = stageIndex === 1 ? "Payment confirmed" : "Preparing your order";
     description = "Your payment is confirmed. The store has not posted a pickup-ready update yet.";
   }
+  if (paid && order.status === "fulfilled") {
+    stageIndex = 3; phase = "fulfilled"; title = "Your items have been picked";
+    description = "Your items have been fulfilled from inventory. The next step is packing and preparing the pickup handoff.";
+  }
+  if (paid && shipment?.status === "packed") {
+    stageIndex = 4; phase = "packed"; title = "Packed for your pickup store";
+    description = "The team recorded that your order is packed. Wait for the pickup-ready confirmation before travelling.";
+  }
   if (paid && shipment?.status === "in_transit") {
-    stageIndex = 2; phase = "in_transit"; title = "On the way to pickup";
+    stageIndex = 5; phase = "in_transit"; title = "On the way to pickup";
     description = "The store recorded an in-transit update for this order. Wait for a ready-for-pickup confirmation before travelling.";
   }
   if (paid && hasBackorder) {
@@ -88,11 +97,11 @@ export function deriveOrderTracking(order: OrderTrackingData): OrderTrackingView
     stageIndex = 2; phase = "exception"; tone = "attention"; title = "Store update required";
     description = "The store flagged a fulfillment exception. See the recorded update below for details.";
   } else if (paid && ready) {
-    stageIndex = 3; phase = "ready"; tone = "success"; title = order.pickup === false ? "Ready for collection" : "Ready for pickup";
+    stageIndex = 6; phase = "ready"; tone = "success"; title = order.pickup === false ? "Ready for collection" : "Ready for pickup";
     description = "The store has marked this order ready. Bring your order number when collecting it.";
   }
   if (paid && completed) {
-    stageIndex = 4; phase = "complete"; tone = "success"; title = order.pickup === false ? "Order delivered" : "Order collected";
+    stageIndex = 7; phase = "complete"; tone = "success"; title = order.pickup === false ? "Order delivered" : "Order collected";
     description = order.status === "closed" ? "The store has closed this order. Your receipt and fulfillment history remain available here." : "A delivered fulfillment update has been recorded for this order.";
   }
   if (order.status === "cancelled") {
@@ -103,6 +112,7 @@ export function deriveOrderTracking(order: OrderTrackingData): OrderTrackingView
     stageIndex = -1; phase = "refunded"; tone = "muted"; title = "Payment refunded";
     description = "The stored payment record is marked refunded. Contact the store for help with this order.";
   }
+  if(closedWithoutPayment){stageIndex=7;phase="complete";tone="attention";title="Order closed";description="This order is closed in the stored history. Payment is not marked paid; review the receipt records if payment information is needed.";}
   const firstMatchingEvent = (statuses: string[]) => {
     const matching = events.filter((event) => statuses.includes(event.status) && validTrackingDate(event.occurred_at));
     return matching.length ? matching[matching.length - 1].occurred_at : null;
@@ -110,18 +120,25 @@ export function deriveOrderTracking(order: OrderTrackingData): OrderTrackingView
   const definitions = [
     { key: "placed", label: "Order placed", occurredAt: validTrackingDate(order.requested_at), detail: "Saved in your account" },
     { key: "paid", label: "Payment confirmed", occurredAt: null, detail: paid ? (order.is_demo_payment ? "Stripe test payment received" : "Payment recorded") : "Awaiting successful payment" },
-    { key: "preparing", label: "Preparing", occurredAt: stageIndex >= 2 ? firstMatchingEvent(["processing", "packed", "in_transit"]) : null, detail: phase === "backorder" ? "Waiting for stock or a build" : phase === "in_transit" ? "Recorded as in transit" : phase === "exception" ? "Store is reviewing an exception" : "Picking stock and preparing pickup" },
-    { key: "ready", label: "Ready for pickup", occurredAt: stageIndex >= 3 ? firstMatchingEvent(["ready_for_pickup"]) : null, detail: stageIndex >= 3 ? "Pickup readiness recorded" : "Waiting for the store’s ready update" },
-    { key: "complete", label: order.pickup === false ? "Delivered" : "Collected", occurredAt: stageIndex >= 4 ? firstMatchingEvent(["delivered"]) : null, detail: stageIndex >= 4 ? "Fulfillment completed" : "Your order will stay here after collection" },
+    { key: "preparing", label: "Preparing", occurredAt: stageIndex >= 2 ? firstMatchingEvent(["processing"]) : null, detail: phase === "backorder" ? "Waiting for stock or a build" : phase === "exception" ? "Store is reviewing an exception" : "Picking stock and preparing pickup" },
+    { key: "fulfilled", label: "Items picked", occurredAt: stageIndex >= 3 ? validTrackingDate(order.fulfilled_at) : null, detail: "Inventory fulfillment before the pickup handoff" },
+    { key: "packed", label: "Packed", occurredAt: stageIndex >= 4 ? firstMatchingEvent(["packed"]) : null, detail: "Packing before transfer or pickup" },
+    { key: "in_transit", label: "To pickup store", occurredAt: stageIndex >= 5 ? firstMatchingEvent(["in_transit"]) : null, detail: "Store transfer, when needed" },
+    { key: "ready", label: "Ready for pickup", occurredAt: stageIndex >= 6 ? firstMatchingEvent(["ready_for_pickup"]) : null, detail: stageIndex >= 6 ? "Pickup readiness recorded" : "Waiting for the store’s ready update" },
+    { key: "complete", label: order.pickup === false ? "Delivered" : "Collected", occurredAt: stageIndex >= 7 ? firstMatchingEvent(["delivered"]) : null, detail: stageIndex >= 7 ? "Fulfillment completed" : "Your order will stay here after collection" },
   ];
   let milestones = definitions.map((step, index): TrackingMilestone => ({
     ...step,
-    state: terminal ? (index === 0 && Boolean(validTrackingDate(order.requested_at)) ? "complete" : "pending") : index < stageIndex || (index === 4 && stageIndex === 4) ? "complete" : index === stageIndex ? "current" : "pending",
+    state: terminal ? (index === 0 && Boolean(validTrackingDate(order.requested_at)) ? "complete" : "pending") : index < stageIndex || (index === 7 && stageIndex === 7) ? "complete" : index === stageIndex ? "current" : "pending",
   }));
   if (terminal) milestones = [
     { key: "placed", label: "Order placed", state: validTrackingDate(order.requested_at) ? "complete" : "pending", occurredAt: validTrackingDate(order.requested_at), detail: "Saved in your account" },
     { key: phase, label: phase === "refunded" ? "Payment refunded" : "Order cancelled", state: "current", occurredAt: null,
       detail: phase === "refunded" ? "Refund status recorded" : paid ? "Payment remains marked paid; contact the store" : "Order will not be prepared" },
+  ];
+  if(closedWithoutPayment)milestones=[
+    {key:"placed",label:"Order placed",state:"complete",occurredAt:validTrackingDate(order.requested_at),detail:"Stored order history"},
+    {key:"closed",label:"Order closed",state:"complete",occurredAt:null,detail:"Closed status recorded; payment remains unconfirmed"},
   ];
   const recordTimes = [order.requested_at, order.fulfilled_at, shipment?.updated_at, ...events.map((event) => event.occurred_at)]
     .map((value) => validTrackingDate(value)).filter((value): value is string => Boolean(value)).sort((a, b) => time(b) - time(a));

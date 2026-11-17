@@ -21,6 +21,7 @@ export function operationTasks(data: OperationsSource): OperationTask[] {
     if (number(stock.available) <= number(item?.reorder_point)) tasks.push({ id: `stock-${stock.item_id}-${stock.location_id}`, module: "inventory", title: `${stock.item_name ?? itemName(stock.item_id)} · ${stock.location_name}`, detail: `${number(stock.available)} available; reorder point ${number(item?.reorder_point)}. Review MRP or transfer stock.`, urgent: number(stock.available) <= 0, recordId: String(stock.item_id) });
   }
   for (const po of data.purchaseOrders) {
+    if(po.delivery_recorded===false&&["sent","partially_received"].includes(String(po.status)))tasks.push({id:`send-${po.id}`,module:"purchasing",title:`Send PO-${po.po_number}`,detail:"Review the PO document, send it to the supplier, and record the sending confirmation.",urgent:false,recordId:String(po.id)});
     const outstanding = lines(po.purchase_order_lines).reduce((sum, line) => sum + Math.max(0, number(line.quantity_ordered) - number(line.quantity_received)), 0);
     if (outstanding && !["closed", "cancelled"].includes(String(po.status))) tasks.push({ id: `po-${po.id}`, module: "purchasing", title: `Receive PO-${po.po_number}`, detail: `${outstanding} units outstanding · expected ${po.expected_at ?? "receipt date not set"}.`, urgent: Boolean(po.expected_at && String(po.expected_at).slice(0,10) < new Date().toISOString().slice(0,10)), recordId: String(po.id) });
   }

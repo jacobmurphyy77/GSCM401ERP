@@ -61,6 +61,9 @@ export function useStorefront() {
   const [notice, setNotice] = useState("");
   const checkoutInProgress = useRef(false);
   const pendingAttempt = useRef<string | null>(null);
+  const accountRequest = useRef(0);
+  const accountUserId = session?.user.id;
+  const invalidateAccount=useCallback(()=>{accountRequest.current++;},[]);
 
   function clearCheckoutAttempt(requestId?: string | null) {
     if (requestId) {
@@ -97,18 +100,23 @@ export function useStorefront() {
     setCatalogLoading(false);
   }, [supabase]);
 
-  const loadAccount = useCallback(async (userId: string) => {
-    setAccountLoading(true); setAccountError("");
+  const loadAccount = useCallback(async (userId: string, silent = false) => {
+    const request = ++accountRequest.current;
+    if (!silent) setAccountLoading(true);
+    try {
     const [profile, customerOrders, paid] = await Promise.all([
       supabase.from("profiles").select("role").eq("id", userId).single(),
       supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,stripe_checkout_session_id,requested_at,fulfilled_at,pickup,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,reserved_quantity,fulfilled_quantity,items(name)),shipments(id,status,tracking_code,estimated_at,updated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
       supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("created_by", userId).eq("payment_status", "paid"),
     ]);
+    if (request !== accountRequest.current) return;
     if (profile.data) setRole(String(profile.data.role));
     if (customerOrders.data) setOrders(customerOrders.data as unknown as CustomerOrder[]);
     setPaidOrders(paid.error ? null : paid.count ?? 0);
-    if (profile.error || customerOrders.error || paid.error) setAccountError("We couldn’t load all your account details. Please refresh your account.");
-    setAccountLoading(false);
+    setAccountError(profile.error || customerOrders.error || paid.error ? "We couldn’t refresh all order details. Your last loaded updates remain visible; we will retry automatically." : "");
+    } catch {
+      if (request === accountRequest.current) setAccountError("Order updates could not refresh. Your last loaded journey remains visible; we will retry automatically.");
+    } finally { if (request === accountRequest.current) setAccountLoading(false); }
   }, [supabase]);
 
   useEffect(() => {
@@ -132,15 +140,27 @@ export function useStorefront() {
   }, [cart, cartRestored]);
 
   useEffect(() => {
-    if (!session) { setRole(null); setOrders([]); setPaidOrders(null); setOrderUpdatesConnected(false); return; }
+    if (!accountUserId) { accountRequest.current++; setRole(null); setOrders([]); setPaidOrders(null); setOrderUpdatesConnected(false); return; }
     setOrderUpdatesConnected(false);
-    void loadAccount(session.user.id);
-    const channel = supabase.channel(`customer-orders-${session.user.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "sales_orders", filter: `created_by=eq.${session.user.id}` }, () => { void loadAccount(session.user.id); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, () => { void loadAccount(session.user.id); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "shipment_events" }, () => { void loadAccount(session.user.id); }).subscribe((status) => { setOrderUpdatesConnected(status === "SUBSCRIBED"); });
-    return () => { void supabase.removeChannel(channel); };
-  }, [session, loadAccount, supabase]);
+    void loadAccount(accountUserId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void loadAccount(accountUserId, true); }, 150); };
+    const channel = supabase.channel(`customer-orders-${accountUserId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales_orders", filter: `created_by=eq.${accountUserId}` }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales_order_lines" }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipment_events" }, schedule).subscribe((status) => { setOrderUpdatesConnected(status === "SUBSCRIBED"); if (status === "SUBSCRIBED") schedule(); });
+    return () => { invalidateAccount(); clearTimeout(timer); void supabase.removeChannel(channel); };
+  }, [accountUserId, loadAccount, supabase, invalidateAccount]);
+
+  useEffect(() => {
+    if (!accountUserId) return;
+    const refreshVisible = () => { if (document.visibilityState === "visible") { void loadAccount(accountUserId, true); void refreshCatalog(); } };
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadAccount(accountUserId, true); }, accountOpen ? 5000 : 20000);
+    return () => { window.removeEventListener("focus", refreshVisible); document.removeEventListener("visibilitychange", refreshVisible); window.clearInterval(timer); };
+  }, [accountUserId, accountOpen, loadAccount, refreshCatalog]);
 
   useEffect(() => {
     if (!authReady) return;

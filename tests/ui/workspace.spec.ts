@@ -9,7 +9,9 @@ const encoded = (value: object) => Buffer.from(JSON.stringify(value)).toString("
 const fakeToken = `${encoded({ alg: "HS256", typ: "JWT" })}.${encoded({ sub: manager.id, aud: "authenticated", role: "authenticated", exp: 4102444800, iat: 1767225600 })}.MOCK-NOT-A-REAL-SIGNATURE`;
 const fakeSession = { access_token: fakeToken, refresh_token: "MOCK-REFRESH-NOT-A-CREDENTIAL", expires_in: 86400, expires_at: 4102444800, token_type: "bearer", user: manager };
 
-async function setup(page: Page, authenticated = true, pos?: { calls: number }) {
+type WorkflowState={tables:Record<string,Row[]>;failOrders?:boolean;dispatchMissing?:boolean;mutations:string[]};
+async function setup(page: Page, authenticated = true, pos?: { calls: number }, workflow?:WorkflowState) {
+  const tables=workflow?.tables??data;
   const unexpected: string[] = [];
   await page.addInitScript(() => {
     const state = window as Window & { mockCameraCalls?: number };
@@ -37,12 +39,40 @@ async function setup(page: Page, authenticated = true, pos?: { calls: number }) 
       const paid = data.sales_orders.find((order) => order.id === fixture.customerOrderId)!;
       return route.fulfill({ status: 200, headers, body: JSON.stringify({ order_id: paid.id, order_number: paid.order_number, total: paid.total }) });
     }
+    if(workflow&&url.pathname.startsWith('/rest/v1/rpc/')&&request.method()==='POST'){
+      const name=url.pathname.split('/').at(-1)!;const body=request.postDataJSON();workflow.mutations.push(name);
+      if(name==='record_purchase_order_dispatch'){
+        const records=tables.purchase_order_dispatches??(tables.purchase_order_dispatches=[]);
+        const entry={id:body.p_request_id,purchase_order_id:body.p_order_id,method:body.p_method,recipient:body.p_recipient,reference:body.p_reference,recorded_at:new Date().toISOString()};
+        if(!records.some(row=>row.id===entry.id))records.push(entry);
+        return route.fulfill({status:200,headers,body:JSON.stringify(entry)});
+      }
+      const order=tables.sales_orders.find(row=>row.id===body.p_order_id||tables.shipments.some(shipment=>shipment.id===body.p_shipment_id&&shipment.order_id===row.id));
+      if(!order)throw new Error('Mock workflow order missing');
+      const shipment=tables.shipments.find(row=>row.order_id===order.id)!;
+      if(name==='fulfill_sales_order'){
+        order.status='fulfilled';order.fulfilled_at=new Date().toISOString();
+        for(const line of order.sales_order_lines as Row[]){line.reserved_quantity=0;line.fulfilled_quantity=line.quantity;}
+      }else if(name==='update_demo_shipment'||name==='advance_order_fulfillment'){
+        const status=body.p_status??(body.p_action==='collected'?'delivered':'ready_for_pickup');
+        shipment.status=status;shipment.updated_at=new Date().toISOString();
+        const events=(shipment.shipment_events??[]) as Row[];events.push({status,note:body.p_note??'Customer pickup handoff recorded',occurred_at:shipment.updated_at});shipment.shipment_events=events;
+        if(status==='delivered')order.status='closed';
+        if(status==='ready_for_pickup')order.status='fulfilled';
+      }else throw new Error('Unexpected mocked workflow RPC '+name);
+      order.shipments=[shipment];
+      return route.fulfill({status:200,headers,body:JSON.stringify({order_id:order.id,status:order.status,shipment_status:shipment.status})});
+    }
     if (!url.pathname.startsWith("/rest/v1/") || !["GET", "HEAD"].includes(request.method())) {
       unexpected.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 400, headers, body: JSON.stringify({ message: "External writes are blocked by the local UI fixture" }) });
     }
     const table = url.pathname.slice("/rest/v1/".length);
-    let rows = [...(data[table] ?? [])];
+    if(workflow?.dispatchMissing&&table==='purchase_order_dispatches')return route.fulfill({status:404,headers,body:JSON.stringify({message:'Dispatch migration not installed',code:'PGRST205'})});
+    // Use a completed 500 response: the SDK automatically retries 503 on its own timers.
+    if(workflow?.failOrders&&table==='sales_orders')return route.fulfill({status:500,headers,body:JSON.stringify({message:'Local fixture temporarily rejects order refresh'})});
+    let rows = [...(tables[table] ?? [])];
+    if(table==='purchase_orders'&&url.searchParams.get('select')?.includes('suppliers('))rows=rows.map(order=>({...order,suppliers:tables.suppliers.find(supplier=>supplier.id===order.supplier_id),locations:tables.locations.find(location=>location.id===order.location_id),purchase_order_lines:(order.purchase_order_lines as Row[]).map(line=>({...line,items:tables.items.find(item=>item.id===line.item_id)}))}));
     for (const [field, filter] of url.searchParams.entries()) {
       if (filter.startsWith("eq.")) rows = rows.filter((row) => String(row[field]) === filter.slice(3));
       if (filter.startsWith("in.(")) { const allowed = filter.slice(4, -1).split(","); rows = rows.filter((row) => allowed.includes(String(row[field]))); }
@@ -163,7 +193,7 @@ test("customer chooses compatible parts and sees the stored paid order journey",
   await page.getByRole("button", { name: "My account and orders", exact: true }).click();
   const account = page.getByRole("dialog", { name: "My account & orders" });
   await expect(account.getByText(`Order ${fixture.customerOrderNumber}`, { exact: true })).toBeVisible();
-  await account.locator(".customer-order summary").first().click();
+  await expect(account.locator(".customer-order").first()).toHaveAttribute("open", "");
   await expect(account.getByRole("region", { name: `Order ${fixture.customerOrderNumber} fulfillment progress` })).toBeVisible();
   await expect(account.getByRole("list", { name: "Order milestones" })).toBeVisible();
   await expect(account.getByText("Transfer to the Logan pickup store recorded", { exact: true })).toBeVisible();
@@ -201,4 +231,78 @@ test("two rapid POS submits create only one mocked sale and display its stored r
   expect(pos.calls).toBe(1);
   expect(unexpected).toEqual([]);
   await page.locator(".pos-receipt").screenshot({ path: "/workspace/shared/mock-pos-receipt.png" });
+});
+
+test('PO documents download without claiming delivery; explicit sending confirmation is stored',async({page})=>{
+  const workflow:WorkflowState={tables:structuredClone(data),mutations:[],dispatchMissing:true};workflow.tables.purchase_order_dispatches=[];
+  const unexpected=await setup(page,true,undefined,workflow);
+  await page.goto('/GSCM401ERP/employee/');
+  await page.getByRole('button',{name:'Purchasing',exact:true}).click();
+  await page.getByRole('button',{name:'View / send PO',exact:true}).first().click();
+  const dialog=page.getByRole('dialog',{name:'PO-1 · document & sending',exact:true});
+  await expect(dialog).toBeVisible();
+  await expect(page.frameLocator('iframe[title="PO-1 preview"]').getByText('Total $2,400.00',{exact:true})).toBeVisible();
+  await expect(dialog.getByRole('button',{name:'Record confirmed sending',exact:true})).toBeDisabled();
+  const downloadEvent=page.waitForEvent('download');await dialog.getByRole('button',{name:'Download PO document',exact:true}).click();
+  const download=await downloadEvent;expect(download.suggestedFilename()).toBe('Wasatch-PO-1.html');
+  await download.saveAs('/workspace/shared/mock-purchase-order.html');
+  expect(workflow.mutations).toEqual([]);expect(workflow.tables.purchase_order_dispatches).toEqual([]);
+  await expect(dialog.getByText('No confirmed sending has been recorded.',{exact:false})).toBeVisible();
+  await expect(dialog.getByText('Documents and email drafts are available.',{exact:false})).toBeVisible();
+  workflow.dispatchMissing=false;await dialog.getByRole('button',{name:'Refresh sending history',exact:true}).click();
+  await expect(dialog.getByText('Documents and email drafts are available.',{exact:false})).toHaveCount(0);
+  await dialog.getByLabel('Recipient email / contact').fill('fixture.supplier@example.test');
+  await dialog.getByLabel('Sending reference',{exact:true}).fill('LOCAL FIXTURE ONLY — no message sent');
+  await dialog.getByLabel('I sent this purchase order to the recipient above.').check();
+  await dialog.getByRole('button',{name:'Record confirmed sending',exact:true}).click();
+  await expect(dialog.locator('.po-dispatch-history')).toContainText('fixture.supplier@example.test');
+  expect(workflow.mutations).toEqual(['record_purchase_order_dispatch']);
+  expect(workflow.tables.purchase_order_dispatches).toHaveLength(1);
+  await page.screenshot({path:'/workspace/shared/mock-po-document-sending.png',fullPage:true});
+  expect(unexpected).toEqual([]);
+});
+
+test('employee handoffs remain visible and a customer journey refreshes through every stage without Realtime',async({page,browser})=>{
+  test.setTimeout(60000);
+  const workflow:WorkflowState={tables:structuredClone(data),mutations:[]};workflow.tables.purchase_order_dispatches=[];
+  const order=workflow.tables.sales_orders.find(row=>row.id===fixture.customerOrderId)!;
+  const shipment=workflow.tables.shipments.find(row=>row.order_id===order.id)!;
+  shipment.status='processing';shipment.shipment_events=[{status:'processing',note:'Local fixture order preparation',occurred_at:'2026-11-17T08:00:00Z'}];order.shipments=[shipment];
+  const employeeUnexpected=await setup(page,true,undefined,workflow);
+  const customerContext=await browser.newContext({viewport:{width:1280,height:1000}});
+  const customer=await customerContext.newPage();
+  try{
+    await customer.clock.install();
+    const customerUnexpected=await setup(customer,true,undefined,workflow);
+    await customer.goto('/GSCM401ERP/');await customer.getByRole('button',{name:'My account and orders',exact:true}).click();
+    const account=customer.getByRole('dialog',{name:'My account & orders',exact:true});
+    const route=account.locator('.wcw-tracking-route');
+    await expect(route).toHaveAttribute('data-stage','preparing');
+    let previousMarker=await route.locator('.wcw-route-marker').getAttribute('transform');
+    await page.goto('/GSCM401ERP/employee/');await page.getByRole('button',{name:'Sales orders',exact:true}).click();
+    const card=page.locator(`[data-order-id="${order.id}"]`);
+    await card.getByRole('button',{name:'Pick & fulfill order',exact:true}).click();
+    const drawer=page.getByRole('dialog',{name:`Order ${fixture.customerOrderNumber} · journey & actions`,exact:true});
+    await expect(drawer.getByRole('button',{name:'Mark packed',exact:true})).toBeVisible();
+    for(const [phase,next] of [['fulfilled','Mark packed'],['packed','Record transfer to pickup store'],['in_transit','Mark ready for pickup'],['ready','Record collection'],['complete',null]] as const){
+      await customer.clock.fastForward(5500);
+      await expect(route).toHaveAttribute('data-stage',phase);
+      const marker=await route.locator('.wcw-route-marker').getAttribute('transform');
+      expect(marker).not.toBe(previousMarker);previousMarker=marker;
+      await expect(account.locator('.customer-order').first()).toHaveAttribute('open','');
+      await expect(drawer).toBeVisible();
+      if(next){await drawer.getByRole('button',{name:next,exact:true}).click();await expect(drawer.locator('.wcw-tracking-route')).not.toHaveAttribute('data-stage',phase);}
+    }
+    await expect(drawer.getByRole('heading',{name:'Order collected',exact:true})).toBeVisible();
+    await drawer.getByRole('button',{name:'Inventory →',exact:true}).click();
+    await expect(page.getByRole('region',{name:'Current order handoff'})).toContainText(`Following order ${fixture.customerOrderNumber}`);
+    await page.getByRole('button',{name:'Sales orders',exact:true}).click();await expect(card).toBeVisible();await expect(card).toContainText('Order collected');
+    workflow.failOrders=true;await customer.clock.fastForward(5500);
+    await expect(account.getByRole('alert')).toContainText('retry automatically');await expect(route).toHaveAttribute('data-stage','complete');
+    workflow.failOrders=false;await customer.clock.fastForward(5500);await expect(account.getByRole('alert')).toHaveCount(0);
+    await customer.screenshot({path:'/workspace/shared/mock-customer-live-journey.png',fullPage:true});
+    await page.screenshot({path:'/workspace/shared/mock-persistent-order-history.png',fullPage:true});
+    expect(workflow.mutations).toEqual(['fulfill_sales_order','update_demo_shipment','update_demo_shipment','advance_order_fulfillment','advance_order_fulfillment']);
+    expect(employeeUnexpected).toEqual([]);expect(customerUnexpected).toEqual([]);
+  }finally{await customerContext.close();}
 });

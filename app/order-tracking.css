@@ -15,7 +15,10 @@
 .wcw-route-labels strong { font-size: 10px; font-weight: 650; }
 .wcw-route-labels small { color: #768b9a; font-size: 8px; line-height: 1.5; }
 .wcw-route-caption { margin: 0; padding: 9px 12px; text-align: center; color: #7a8e9d; font-size: 8px; background: #e9f0f5; }
-.wcw-order-milestones { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 24px 0; padding: 0; }
+.wcw-order-milestones { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px 0; margin: 24px 0; padding: 0; }
+.wcw-route-progress { transition: stroke-dasharray .6s ease; }
+.wcw-route-marker { transition: transform .6s ease; }
+@media(prefers-reduced-motion:reduce) { .wcw-route-progress,.wcw-route-marker { transition: none; } }
 .wcw-order-milestones[data-terminal="true"] { grid-template-columns: 1fr 1fr; }
 .wcw-order-milestones li { position: relative; min-width: 0; padding-right: 10px; }
 .wcw-order-milestones li:not(:last-child)::after { content: ""; position: absolute; top: 10px; left: 23px; right: 0; height: 2px; background: #dbe4eb; }
@@ -68,3 +71,5 @@
   .wcw-route-labels { padding: 0 12px 10px; }
   .wcw-route-labels strong { font-size: 9px; }
 }
+
+@media(min-width:651px) { .wcw-order-milestones li:nth-child(4)::after { display:none; } }

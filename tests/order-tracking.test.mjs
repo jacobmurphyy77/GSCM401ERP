@@ -31,7 +31,7 @@ test("confirmed payment shows preparation without inventing a payment timestamp"
 test("warehouse fulfillment alone never claims pickup readiness or collection", () => {
   const view = deriveOrderTracking({ ...order, status: "fulfilled", fulfilled_at: "2026-11-17T09:10:00Z", shipments: shipment("in_transit") });
   assert.equal(view.phase, "in_transit");
-  assert.equal(view.stageIndex, 2);
+  assert.equal(view.stageIndex, 5);
   assert.equal(view.milestones.find((row) => row.key === "ready").state, "pending");
   assert.equal(view.latestRecordedAt, "2026-11-17T09:10:00Z");
 });
@@ -39,11 +39,11 @@ test("warehouse fulfillment alone never claims pickup readiness or collection", 
 test("pickup and collection advance only from explicit stored statuses", () => {
   const ready = deriveOrderTracking({ ...order, shipments: shipment("ready_for_pickup", [{ status: "ready_for_pickup", note: "Bring order number", occurred_at: "2026-11-18T08:00:00Z" }]) });
   assert.equal(ready.phase, "ready");
-  assert.equal(ready.stageIndex, 3);
-  assert.equal(ready.milestones[3].occurredAt, "2026-11-18T08:00:00Z");
+  assert.equal(ready.stageIndex, 6);
+  assert.equal(ready.milestones.find(step=>step.key==='ready').occurredAt, "2026-11-18T08:00:00Z");
   const closed = deriveOrderTracking({ ...order, status: "closed" });
   assert.equal(closed.phase, "complete");
-  assert.equal(closed.milestones[4].occurredAt, null);
+  assert.equal(closed.milestones.find(step=>step.key==='complete').occurredAt, null);
   const delivered = deriveOrderTracking({ ...order, pickup: false, shipments: shipment("delivered") });
   assert.equal(delivered.title, "Order delivered");
 });
@@ -87,4 +87,24 @@ test("activity uses actual event times in newest-first order and exceptions revo
   assert.equal(view.milestones[3].occurredAt, null);
   assert.equal(view.latestRecordedAt, "2026-11-17T13:00:00Z");
   assert.equal(validTrackingDate("not a date"), null);
+});
+
+
+test("fulfillment, packing, transfer, readiness and collection each advance the stored journey",()=>{
+  const picked={...order,status:'fulfilled',fulfilled_at:'2026-11-17T09:00:00Z',sales_order_lines:[{quantity:2,reserved_quantity:0,fulfilled_quantity:2}]};
+  const inputs=[order,picked,{...picked,shipments:shipment('packed')},{...picked,shipments:shipment('in_transit')},{...picked,shipments:shipment('ready_for_pickup')},{...picked,status:'closed',shipments:shipment('delivered')}];
+  const views=inputs.map(deriveOrderTracking);
+  assert.deepEqual(views.map(view=>view.phase),['preparing','fulfilled','packed','in_transit','ready','complete']);
+  assert.deepEqual(views.map(view=>view.stageIndex),[2,3,4,5,6,7]);
+  assert.equal(views[1].milestones.find(step=>step.key==='fulfilled').occurredAt,picked.fulfilled_at);
+  assert.equal(views[2].milestones.find(step=>step.key==='packed').occurredAt,null,'no fabricated packing timestamp');
+  assert.equal(views[5].milestones.every(step=>step.state==='complete'),true);
+});
+
+
+test("closed historical orders never ask for checkout or invent confirmed payment",()=>{
+ const view=deriveOrderTracking({...order,status:'closed',payment_status:'unpaid'});
+ assert.equal(view.phase,'complete');assert.equal(view.title,'Order closed');
+ assert.match(view.description,/Payment is not marked paid/);
+ assert.equal(view.milestones.some(step=>step.key==='paid'&&step.state==='complete'),false);
 });
