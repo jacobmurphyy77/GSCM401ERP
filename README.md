@@ -38,9 +38,11 @@ update public.profiles set role = 'manager' where id = '<auth-user-id>';
 
 ## Current scope
 
-Staff workflows include POS checkout, barcode input for a USB scanner, inventory adjustments and transfers, returns, purchase orders and receipts, production orders, four-week MRP, financial and supplier reports, and in-app shipment status timelines. Customer accounts can browse pickup-store inventory, submit orders, and pay through Stripe Checkout. A Stripe webhook confirms paid orders and sends a confirmation email through Resend. The database is the source of truth for displayed totals, generated six-month sales history, inventory, and operations records. Realtime subscriptions refresh shared inventory, orders, and shipment updates.
+Staff workflows include POS checkout, printed Code 128 labels, camera/USB/manual barcode scanning, inventory adjustments and transfers, returns and exchanges, purchase orders and receipts, production orders, four-week MRP, financial and supplier reports, and in-app shipment status timelines. Customer accounts can browse pickup-store inventory, choose a part before selecting its bike fit, submit orders, and pay through Stripe Checkout. A Stripe webhook confirms paid orders; confirmation-email delivery through Resend remains paused pending sender configuration. The database is the source of truth for displayed totals, generated six-month sales history, inventory, and operations records. Realtime subscriptions refresh shared inventory, orders, and shipment updates.
 
-The provider code needs to be deployed and configured before online payment or email can work. Use Stripe test mode for class demos and a Resend verified sender. Stripe's test mode does not charge a card; live-mode processing may have fees. The chosen shipment tracking is simulated in-app, not connected to a carrier. Barcode input supports a USB scanner that types into the POS field; camera scanning is not included. Do not use the seeded demo history or city-level tax rates as production business records or tax advice.
+The Stripe sandbox functions are deployed; the user previously reported a successful checkout. Use Stripe test mode for class demos. Email delivery additionally requires a configured Resend sender. The chosen shipment tracking is simulated in-app, not connected to a carrier. Camera scanning requires HTTPS and permission on the demonstration device; printed-paper performance still needs a physical test. Do not use the seeded demo history or city-level tax rates as production business records or tax advice.
+
+One purchasing requirement remains incomplete: POs are recorded with status `sent`, but no supplier delivery or PO export action is implemented yet. Full live acceptance of all 12 assignment capabilities remains separate from the automated tests.
 
 ### Payment and email setup
 
@@ -58,4 +60,4 @@ Set Supabase **Authentication → URL Configuration → Site URL** to the publis
 
 ## Operations upgrade
 
-See [the operations release guide](docs/OPERATIONS-RELEASE.md) for camera/USB barcode scanning, printable labels, bike-specific components, task queues, manager employee creation, customer order journeys, filterable reports and supplier workflows. Supabase migrations 004–005 and the manager function are tested and ready for authorized backend activation. The hosted frontend supports both the existing and upgraded schema.
+See [the operations release guide](docs/OPERATIONS-RELEASE.md) for camera/USB barcode scanning, printable labels, bike-specific components, task queues, manager employee creation, customer order journeys, filterable reports and supplier workflows. Read-only live checks confirm migrations 004–006 are reflected in the catalog/workflow tables, and the manager has confirmed the Team access list loads. All 35 model-specific part prices use proportional stored bike costs with a 50% markup. No npm command is needed to use the hosted app.
