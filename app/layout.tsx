@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./storefront.css";
+import "./operations.css";
+import "./reports.css";
+import "./order-tracking.css";
 
 export const metadata: Metadata = {
   title: "Wasatch Cycle Works ERP",

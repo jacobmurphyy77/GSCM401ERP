@@ -55,3 +55,7 @@ The GitHub repo holds the source, GitHub Pages serves the frontend, and Supabase
 Run `npm run build:pages` to create `out/` with the repository base path and `.nojekyll` marker. Publish the contents of `out/` to the `gh-pages` branch, then select that branch and `/ (root)` under **Settings → Pages → Deploy from a branch**. `npm run build` creates a static export for a root-domain host. `npm start` serves the root-domain export locally.
 
 Set Supabase **Authentication → URL Configuration → Site URL** to the published app URL and add the same URL as an allowed redirect. This is separate from signing in to the Supabase dashboard.
+
+## Operations upgrade
+
+See [the operations release guide](docs/OPERATIONS-RELEASE.md) for camera/USB barcode scanning, printable labels, bike-specific components, task queues, manager employee creation, customer order journeys, filterable reports and supplier workflows. Supabase migrations 004–005 and the manager function are tested and ready for authorized backend activation. The hosted frontend supports both the existing and upgraded schema.

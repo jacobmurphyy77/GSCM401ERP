@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/lib/storefront.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
-const { availableStock, calculateCart, isEmployeeRole, parseSavedCart, retailStockLocation } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
+const { availableStock, calculateCart, isEmployeeRole, parseSavedCart, retailStockLocation, componentFamily, compatibleBikeName, productPresentation, retailParts, partsForBike } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
 
 const id = "12345678-1234-1234-1234-123456789abc";
 const secondId = "87654321-4321-4321-4321-cba987654321";
@@ -77,4 +77,43 @@ test("unpriced components are not treated as free products", () => {
   const result = calculateCart([{ ...items[0], item_type: "component", sale_price: 0 }], { [id]: 4 }, 0, 0.073);
   assert.equal(result.units, 0);
   assert.deepEqual(result.rows, []);
+});
+
+const genericSaddle = { ...items[0], id: "generic-seat", sku: "PART-SEAT", item_type: "component", name: "General Saddle", sale_price: 36 };
+const streetSaddle = { ...genericSaddle, id: "street-seat", sku: "PART-SEAT-STREET", compatible_bike_id: id, component_family: "SEAT" };
+const kidsSaddle = { ...genericSaddle, id: "kids-seat", sku: "PART-SEAT-KIDS", compatible_bike_id: secondId, component_family: "SEAT" };
+const streetBars = { ...streetSaddle, id: "street-bar", sku: "PART-BAR-STREET", component_family: "BAR", sale_price: 61.5 };
+
+test("bike-specific parts use their family imagery and stored bike compatibility", () => {
+  assert.equal(productPresentation(streetSaddle).image, "part-seat.webp");
+  assert.equal(productPresentation(streetBars).image, "part-bar.webp");
+  assert.equal(componentFamily(streetSaddle), "SEAT");
+  assert.equal(compatibleBikeName(kidsSaddle, items), "Kids Bike");
+  assert.equal(compatibleBikeName({ ...streetSaddle, compatible_bike_id: "missing" }, items), null);
+});
+
+test("retail hides superseded generic families and preserves legacy-only catalogs", () => {
+  const original = [genericSaddle, { ...genericSaddle, id: "tire", sku: "PART-TIRE" }];
+  assert.deepEqual(retailParts(original), original);
+  const catalog = retailParts([...original, streetSaddle, kidsSaddle, streetBars]);
+  assert.equal(catalog.some((item) => item.id === "generic-seat"), false);
+  assert.equal(catalog.some((item) => item.id === "tire"), true);
+  assert.deepEqual(catalog.filter((item) => componentFamily(item) === "SEAT").map((item) => item.id), ["street-seat", "kids-seat"]);
+});
+
+test("customers choose a bike before browsing specific components and category filters preserve that fit", () => {
+  const parts = retailParts([genericSaddle, streetSaddle, kidsSaddle, streetBars]);
+  assert.deepEqual(partsForBike(parts, ""), []);
+  assert.deepEqual(partsForBike(parts, secondId).map((item) => item.id), ["kids-seat"]);
+  assert.deepEqual(partsForBike(parts, id, "BAR").map((item) => item.id), ["street-bar"]);
+  assert.deepEqual(partsForBike([genericSaddle], ""), [genericSaddle]);
+});
+
+test("different bike fits remain separate stored cart lines with their own item IDs", () => {
+  const result = calculateCart([streetSaddle, kidsSaddle], { "street-seat": 1, "kids-seat": 2 }, 15, 0.073);
+  assert.deepEqual(result.rows.map((item) => item.id), ["street-seat", "kids-seat"]);
+  assert.equal(result.subtotal, 108);
+  assert.equal(result.discount, 16.2);
+  assert.equal(result.tax, 6.7);
+  assert.equal(result.total, 98.5);
 });

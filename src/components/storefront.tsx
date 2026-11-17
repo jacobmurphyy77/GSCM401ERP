@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { assetPath, availableStock, isEmployeeRole, CatalogItem, money, productPresentation, retailStockLocation } from "@/src/lib/storefront";
+import { assetPath, availableStock, isEmployeeRole, CatalogItem, money, productPresentation, retailStockLocation, compatibleBikeName, partFamilyLabels } from "@/src/lib/storefront";
 import { Brand } from "./brand";
 import { Icon } from "./icon";
 import { StoreDialogs } from "./store-dialogs";
@@ -11,7 +11,7 @@ import { StorefrontModel, useStorefront } from "./use-storefront";
 export default function Storefront() {
   const shop = useStorefront();
   const { promotion, role, session, totals, notice, setNotice, setAccountOpen, openAuth, setCartOpen, categories, category, setCategory,
-    selectedLocation, setSelectedLocation, locations, catalogError, catalogLoading, items, parts, visibleItems } = shop;
+    selectedLocation, setSelectedLocation, locations, catalogError, catalogLoading, items, parts, visibleItems, bikes, visibleParts, hasSpecificParts, selectedPartsBike, setSelectedPartsBike, selectedPartFamily, setSelectedPartFamily, partFamilies } = shop;
 
   return <main className="storefront">
     <div className="store-announcement">{promotion
@@ -52,8 +52,9 @@ export default function Storefront() {
     <section className="store-parts store-section" id="parts">
       <div className="collection-heading"><div><p className="store-kicker">THE PARTS BEHIND THE RIDE</p><h2>Keep a good thing going.</h2></div><p>Shop the components used in our bike builds.<br/>Pick up at your local Wasatch store.</p></div>
       <div className="parts-collection-bar"><span>Frames, wheels, tires, and the details that bring it all together.</span><label className="store-picker"><Icon name="pin" size={17}/><span className="sr-only">Parts pickup store</span><select value={selectedLocation} onChange={(event) => setSelectedLocation(event.target.value)}>{locations.map((location) => <option key={location.id} value={location.id}>Pickup: {location.city}</option>)}</select></label></div>
-      {catalogError ? <div className="store-empty"><p>Parts availability could not be loaded.</p><button className="store-button" onClick={() => void shop.refreshCatalog()}>Try again</button></div> : catalogLoading && !parts.length ? <p className="product-loading">Loading parts…</p> : <div className="retail-product-grid">{parts.map((item) => <ProductCard key={item.id} item={item} shop={shop}/>)}</div>}
-      <p className="product-imagery-note">Product imagery is illustrative. Check a bike’s details to see the components used in its build.</p>
+      <div className="parts-fit-controls">{hasSpecificParts ? <label className="store-field">Which bike does your part need to fit?<select value={selectedPartsBike} onChange={(event) => setSelectedPartsBike(event.target.value)}><option value="">Choose your bike</option>{bikes.filter((bike) => parts.some((part) => part.compatible_bike_id === bike.id)).map((bike) => <option key={bike.id} value={bike.id}>{bike.name}</option>)}</select></label> : <p className="parts-fit-help">General replacement components. Bike-specific compatibility has not been recorded for these parts; check fit with the store before ordering.</p>}<label className="store-field">Part category<select value={selectedPartFamily} onChange={(event) => setSelectedPartFamily(event.target.value)}><option value="">All parts</option>{partFamilies.map((family) => <option key={family} value={family}>{partFamilyLabels[family]}</option>)}</select></label></div>
+      {catalogError ? <div className="store-empty"><p>Parts availability could not be loaded.</p><button className="store-button" onClick={() => void shop.refreshCatalog()}>Try again</button></div> : catalogLoading && !parts.length ? <p className="product-loading">Loading parts…</p> : hasSpecificParts && !selectedPartsBike ? <div className="parts-fit-empty"><Icon name="check" size={26}/><h3>A part that fits your ride.</h3><p>Choose your bike above to see its frames, wheels, tires, brakes, drivetrain, saddle, and handlebars.</p></div> : !visibleParts.length ? <div className="store-empty">No parts in this category have been listed for the selected bike.</div> : <div className="retail-product-grid">{visibleParts.map((item) => <ProductCard key={item.id} item={item} shop={shop}/>)}</div>}
+      <p className="product-imagery-note">Product imagery is illustrative. Your bag records the exact bike-specific component selected. Check a bike’s details to see its bill of materials.</p>
     </section>
 
     <section className="pickup-section" id="pickup"><div className="pickup-intro"><p className="store-kicker">ONLINE TO OUTSIDE</p><h2>Your next adventure.<br/>A little closer.</h2><p>Shop from wherever you are. Pick up from the people and places close to home.</p></div><div className="pickup-steps"><article><Icon name="bag" size={28}/><h3>Find your bike</h3><p>Explore the collection and check availability at your preferred store.</p></article><article><Icon name="check" size={28}/><h3>Make it yours</h3><p>Sign in, review your bag, and continue to secure online payment.</p></article><article><Icon name="pin" size={28}/><h3>Pick up local</h3><p>Follow your order in your account, then collect it at your selected store.</p></article></div></section>
@@ -69,9 +70,11 @@ function ProductCard({ item, shop }: { item: CatalogItem; shop: StorefrontModel 
   const view = productPresentation(item);
   const source = retailStockLocation(item, shop.store, shop.allLocations);
   const available = source ? availableStock(shop.stock, item.id, source) : 0;
-  const forSale = Number(item.sale_price) > 0 && Boolean(source);
+  const fit = compatibleBikeName(item, shop.items);
+  const fitChosen = !item.compatible_bike_id || shop.selectedPartsBike === item.compatible_bike_id;
+  const forSale = Number(item.sale_price) > 0 && Boolean(source) && fitChosen;
   return <article className="retail-product">
     <button className="retail-product-image" onClick={() => shop.setDetail(item)} aria-label={`View ${item.name}`}><span className="product-category">{view.category}</span><Image src={assetPath(view.image)} alt={`${item.name} illustrative product image`} width={1200} height={800} sizes="(max-width: 600px) 100vw, (max-width: 1000px) 50vw, 33vw" unoptimized/><span className="product-view">View {item.item_type === "component" ? "part" : "bike"} <Icon name="arrow" size={15}/></span></button>
-    <div className="retail-product-info"><div className="product-name-price"><h3><button onClick={() => shop.setDetail(item)}>{item.name}</button></h3><strong>{Number(item.sale_price) > 0 ? money(item.sale_price) : "Not available yet"}</strong></div><p>{view.caption}</p><div className={`product-availability${available > 0 ? "" : " backorder"}`}><i/>{shop.availability(item)}</div><button className="product-add" disabled={!forSale} onClick={() => shop.addToCart(item)}>{forSale ? "Add to bag" : "Not available to order"}<span aria-hidden="true">+</span></button></div>
+    <div className="retail-product-info">{fit ? <p className="part-compatibility-label"><Icon name="check" size={12}/>Fits {fit}</p> : item.item_type === "component" ? <p className="part-compatibility-label">General part · confirm bike fit</p> : null}<div className="product-name-price"><h3><button onClick={() => shop.setDetail(item)}>{item.name}</button></h3><strong>{Number(item.sale_price) > 0 ? money(item.sale_price) : "Not available yet"}</strong></div><p>{view.caption}</p><div className={`product-availability${available > 0 ? "" : " backorder"}`}><i/>{shop.availability(item)}</div><button className="product-add" disabled={!forSale} onClick={() => shop.addToCart(item)}>{forSale ? "Add to bag" : "Not available to order"}<span aria-hidden="true">+</span></button></div>
   </article>;
 }

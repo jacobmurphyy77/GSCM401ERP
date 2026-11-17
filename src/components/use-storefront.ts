@@ -3,17 +3,17 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/src/lib/supabase/client";
-import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock } from "@/src/lib/storefront";
+import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock, componentFamily, partFamilyLabels, partsForBike, retailParts } from "@/src/lib/storefront";
 
 import { cancelOrderCheckout, cartMatchesOrder, checkoutAttempt, checkoutFingerprint, CheckoutReply, orderCheckoutRequest } from "@/src/lib/checkout";
 
 const checkoutFunction = process.env.NEXT_PUBLIC_CHECKOUT_FUNCTION || "create-checkout-session";
 
-export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
+export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; updated_at?: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
 export type CustomerOrder = {
-  id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string;
+  id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string; pickup?: boolean; fulfilled_at?: string | null;
   estimated_available_at: string | null; location_id: string; discount_code: string | null; checkout_request_id: string | null; stripe_checkout_session_id: string | null; shipments: Shipment | Shipment[] | null;
-  sales_order_lines: { item_id: string; quantity: number; unit_price: number; items: { name: string } | null }[];
+  sales_order_lines: { item_id: string; quantity: number; unit_price: number; reserved_quantity?: number; fulfilled_quantity?: number; items: { name: string } | null }[];
 };
 type Promotion = { code: string; percent_off: number; first_order_only: boolean };
 export const statusText = (value: string) => value.replaceAll("_", " ");
@@ -31,6 +31,9 @@ export function useStorefront() {
   const [catalogError, setCatalogError] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState("");
   const [category, setCategory] = useState("All bikes");
+  const [selectedPartsBike, setSelectedPartsBike] = useState("");
+  const [selectedPartFamily, setSelectedPartFamily] = useState("");
+  const [orderUpdatesConnected, setOrderUpdatesConnected] = useState(false);
   const [cart, setCart] = useState<Cart>({});
   const [cartRestored, setCartRestored] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
@@ -74,7 +77,7 @@ export function useStorefront() {
     setCatalogLoading(true);
     const now = new Date().toISOString();
     const [products, stores, inventory, promo, billOfMaterials] = await Promise.all([
-      supabase.from("items").select("id,sku,name,description,sale_price,lead_time_days,item_type").eq("active", true).in("item_type", ["bike", "component"]).order("sale_price"),
+      supabase.from("items").select("*").eq("active", true).in("item_type", ["bike", "component"]).order("sale_price"),
       supabase.from("locations").select("id,name,city,postal_code,tax_rate,location_type").eq("active", true).order("name"),
       supabase.from("inventory").select("item_id,location_id,on_hand,reserved"),
       supabase.from("discounts").select("code,percent_off,first_order_only").eq("code", "WRIGHTISCOOL").eq("active", true).lte("starts_at", now).or(`ends_at.is.null,ends_at.gte.${now}`).maybeSingle(),
@@ -98,7 +101,7 @@ export function useStorefront() {
     setAccountLoading(true); setAccountError("");
     const [profile, customerOrders, paid] = await Promise.all([
       supabase.from("profiles").select("role").eq("id", userId).single(),
-      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,stripe_checkout_session_id,requested_at,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,items(name)),shipments(id,status,tracking_code,estimated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
+      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,stripe_checkout_session_id,requested_at,fulfilled_at,pickup,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,reserved_quantity,fulfilled_quantity,items(name)),shipments(id,status,tracking_code,estimated_at,updated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
       supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("created_by", userId).eq("payment_status", "paid"),
     ]);
     if (profile.data) setRole(String(profile.data.role));
@@ -129,11 +132,13 @@ export function useStorefront() {
   }, [cart, cartRestored]);
 
   useEffect(() => {
-    if (!session) { setRole(null); setOrders([]); setPaidOrders(null); return; }
+    if (!session) { setRole(null); setOrders([]); setPaidOrders(null); setOrderUpdatesConnected(false); return; }
+    setOrderUpdatesConnected(false);
     void loadAccount(session.user.id);
     const channel = supabase.channel(`customer-orders-${session.user.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales_orders", filter: `created_by=eq.${session.user.id}` }, () => { void loadAccount(session.user.id); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "shipment_events" }, () => { void loadAccount(session.user.id); }).subscribe();
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, () => { void loadAccount(session.user.id); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipment_events" }, () => { void loadAccount(session.user.id); }).subscribe((status) => { setOrderUpdatesConnected(status === "SUBSCRIBED"); });
     return () => { void supabase.removeChannel(channel); };
   }, [session, loadAccount, supabase]);
 
@@ -181,11 +186,14 @@ export function useStorefront() {
   const discountPercent = promotion && appliedCode === promotion.code && eligiblePromotion ? Number(promotion.percent_off) : 0;
   const totals = calculateCart(items, cart, discountPercent, Number(store?.tax_rate ?? 0));
   const bikes = items.filter((item) => item.item_type === "bike");
-  const parts = items.filter((item) => item.item_type === "component");
+  const parts = retailParts(items);
+  const hasSpecificParts = parts.some((item) => Boolean(item.compatible_bike_id));
+  const partFamilies = Object.keys(partFamilyLabels).filter((family) => parts.some((item) => componentFamily(item) === family));
+  const visibleParts = partsForBike(parts, selectedPartsBike, selectedPartFamily);
   const categories = ["All bikes", ...Array.from(new Set(bikes.map((item) => productPresentation(item).category)))];
   const visibleItems = category === "All bikes" ? bikes : bikes.filter((item) => productPresentation(item).category === category);
 
-  function addToCart(item: CatalogItem) { if (Number(item.sale_price) <= 0) { setNotice("This product is not available to order yet."); return; } setCart((current) => ({ ...current, [item.id]: (current[item.id] ?? 0) + 1 })); setNotice(`${item.name} added to your bag.`); }
+  function addToCart(item: CatalogItem) { if (item.compatible_bike_id && selectedPartsBike !== item.compatible_bike_id) { setDetail(item); setNotice("Choose the bike this part needs to fit before adding it to your bag."); return; } if (Number(item.sale_price) <= 0) { setNotice("This product is not available to order yet."); return; } setCart((current) => ({ ...current, [item.id]: (current[item.id] ?? 0) + 1 })); setNotice(`${item.name} added to your bag.`); }
   function changeQuantity(itemId: string, quantity: number) { setCart((current) => { const next = { ...current }; if (quantity > 0) next[itemId] = quantity; else delete next[itemId]; return next; }); }
   function openAuth(intent: "account" | "checkout" = "account") { setAuthIntent(intent); setAuthMode("login"); setAuthError(""); setAuthMessage(""); setCartOpen(false); setAccountOpen(false); }
 
@@ -309,7 +317,7 @@ export function useStorefront() {
     return `Backorder · estimated ${dateText(estimate.toISOString())}`;
   }
 
-  return { items, bikes, parts, bom, allLocations, locations, stock, promotion, catalogLoading, catalogError, selectedLocation, setSelectedLocation, category, setCategory,
+  return { items, bikes, parts, hasSpecificParts, partFamilies, visibleParts, selectedPartsBike, setSelectedPartsBike, selectedPartFamily, setSelectedPartFamily, orderUpdatesConnected, bom, allLocations, locations, stock, promotion, catalogLoading, catalogError, selectedLocation, setSelectedLocation, category, setCategory,
     cart, cartOpen, setCartOpen, discountCode, setDiscountCode, appliedCode, discountPercent, cartMessage, detail, setDetail, session, authReady, role,
     accountOpen, setAccountOpen, accountLoading, accountError, accountMessage, checkoutRecovery, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
     setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, addToCart, changeQuantity,

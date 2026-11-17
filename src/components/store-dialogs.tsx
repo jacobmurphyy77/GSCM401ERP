@@ -2,17 +2,18 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { assetPath, isEmployeeRole, money, productPresentation } from "@/src/lib/storefront";
+import { assetPath, isEmployeeRole, money, productPresentation, componentFamily, compatibleBikeName, PickupLocation } from "@/src/lib/storefront";
 import { Brand } from "./brand";
 import { Icon } from "./icon";
 import { Modal } from "./modal";
+import { CustomerOrderTracking } from "./customer-order-tracking";
 import { CustomerOrder, dateText, statusText, StorefrontModel } from "./use-storefront";
 
 export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
   const { totals, cartOpen, setCartOpen, cart, locations, selectedLocation, setSelectedLocation, store, cartMessage,
     discountCode, setDiscountCode, appliedCode, discountPercent, busy, catalogError, authReady, session, authMode, setAuthMode,
     email, setEmail, password, setPassword, authError, authMessage, setAuthError, setAuthMessage, accountOpen, setAccountOpen,
-    accountLoading, accountError, accountMessage, checkoutRecovery, orders, role, detail, setDetail, addToCart, changeQuantity, availability, openAuth } = shop;
+    accountLoading, accountError, accountMessage, checkoutRecovery, orders, role, detail, setDetail, changeQuantity, availability, openAuth } = shop;
 
   return <>
     <Modal title="Your bag" open={cartOpen} onClose={() => setCartOpen(false)} drawer>
@@ -20,7 +21,7 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
         <p className="cart-intro">{totals.units} {totals.units === 1 ? "item" : "items"} · Pickup at your selected store</p>
         <div className="retail-cart-items">{totals.rows.map((item) => <div className="retail-cart-item" key={item.id}>
           <Image src={assetPath(productPresentation(item).image)} alt="" width={160} height={110} unoptimized/>
-          <div><h3>{item.name}</h3><p>{money(item.sale_price)}</p><div className="quantity-stepper"><button aria-label={`Remove one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] - 1)}>−</button><span>{cart[item.id]}</span><button aria-label={`Add one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] + 1)}>+</button></div></div>
+          <div><h3>{item.name}</h3><p>{money(item.sale_price)}</p>{compatibleBikeName(item, shop.items) && <p className="cart-part-fit">Fits {compatibleBikeName(item, shop.items)}</p>}<div className="quantity-stepper"><button aria-label={`Remove one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] - 1)}>−</button><span>{cart[item.id]}</span><button aria-label={`Add one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] + 1)}>+</button></div></div>
           <button className="icon-button remove-item" aria-label={`Remove ${item.name} from bag`} onClick={() => changeQuantity(item.id, 0)}><Icon name="close" size={16}/></button><small>{availability(item)}</small>
         </div>)}</div>
         <label className="store-field">Pickup store<select value={selectedLocation} onChange={(event) => setSelectedLocation(event.target.value)}>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
@@ -54,22 +55,36 @@ export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
         {accountError && <p className="store-message error" role="alert">{accountError}</p>}
         {accountMessage && <p className="store-message" role="status">{accountMessage}</p>}
         <div className="account-orders-heading"><h3>Your orders</h3><button onClick={() => void shop.loadAccount(session.user.id)} disabled={accountLoading}>{accountLoading ? "Refreshing…" : "Refresh orders"}</button></div>
-        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order) => <OrderDetails key={order.id} order={order} busy={busy} onResume={() => void shop.resumeOrder(order)} onCancel={() => void shop.cancelOrder(order)}/>)}</div>}
+        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order) => <OrderDetails key={order.id} order={order} location={locations.find((location) => location.id === order.location_id)} realtimeConnected={shop.orderUpdatesConnected} busy={busy} onResume={() => void shop.resumeOrder(order)} onCancel={() => void shop.cancelOrder(order)}/>)}</div>}
       </>}
     </Modal>
 
     <Modal title={detail?.name ?? "Bike details"} open={Boolean(detail)} onClose={() => setDetail(null)} wide>
-      {detail && <div className="product-detail-layout"><Image src={assetPath(productPresentation(detail).image)} alt={`${detail.name} illustrative product image`} width={1200} height={800} unoptimized/><div><p className="store-kicker">{productPresentation(detail).category}</p><h3>{productPresentation(detail).caption}</h3><p className="detail-price">{Number(detail.sale_price) > 0 ? money(detail.sale_price) : "Not available to order yet"}</p><p className="product-availability"><i/>{availability(detail)}</p><label className="store-field">Pickup store<select value={selectedLocation} onChange={(event) => setSelectedLocation(event.target.value)}>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><button className="store-button" disabled={Number(detail.sale_price) <= 0} onClick={() => { addToCart(detail); setDetail(null); setCartOpen(true); }}>Add to bag <Icon name="bag"/></button><small className="cart-fineprint">Product imagery is illustrative. Sales tax is calculated for the selected pickup store.</small></div><BuildConnections shop={shop}/></div>}
+      {detail && <ProductDetails shop={shop}/>}
     </Modal>
   </>;
 }
 
-function OrderDetails({ order, busy, onResume, onCancel }: { order: CustomerOrder; busy: boolean; onResume: () => void; onCancel: () => void }) {
-  const shipments = !order.shipments ? [] : Array.isArray(order.shipments) ? order.shipments : [order.shipments];
-  return <details className="customer-order" open={order.payment_status === "unpaid" && order.status === "placed"}><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && (order.checkout_request_id || order.stripe_checkout_session_id) && <><p>This order is still open{order.discount_code ? ` with code ${order.discount_code}` : ""}. Removing items from your bag does not cancel it.</p><div className="customer-order-actions">{order.checkout_request_id && <button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button>}<button className="store-button order-action-secondary" disabled={busy} onClick={onCancel}>Cancel unpaid order</button></div></>}{order.estimated_available_at && <p>Estimated availability: <strong>{dateText(order.estimated_available_at)}</strong></p>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
+function OrderDetails({ order, location, realtimeConnected, busy, onResume, onCancel }: { order: CustomerOrder; location?: PickupLocation; realtimeConnected: boolean; busy: boolean; onResume: () => void; onCancel: () => void }) {
+  return <details className="customer-order" open={order.payment_status === "unpaid" && order.status === "placed"}><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && (order.checkout_request_id || order.stripe_checkout_session_id) && <><p>This order is still open{order.discount_code ? ` with code ${order.discount_code}` : ""}. Removing items from your bag does not cancel it.</p><div className="customer-order-actions">{order.checkout_request_id && <button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button>}<button className="store-button order-action-secondary" disabled={busy} onClick={onCancel}>Cancel unpaid order</button></div></>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
     <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(order.subtotal)}</dd></div>{Number(order.discount_amount) > 0 && <div><dt>Discount</dt><dd>−{money(order.discount_amount)}</dd></div>}<div><dt>Sales tax</dt><dd>{money(order.tax_amount)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(order.total)}</dd></div></dl>
-    {shipments.length ? shipments.map((shipment) => <section className="customer-tracking" key={shipment.id}><div><Icon name="box"/><h4>{shipment.tracking_code}</h4><span>{statusText(shipment.status)}</span></div>{shipment.estimated_at && <p>Estimated update: {dateText(shipment.estimated_at)}</p>}<ol>{[...shipment.shipment_events].sort((a, b) => b.occurred_at.localeCompare(a.occurred_at)).map((event, index) => <li key={`${event.occurred_at}-${index}`}><strong>{statusText(event.status)}</strong><span>{event.note}</span><small>{new Date(event.occurred_at).toLocaleString()}</small></li>)}</ol></section>) : <p className="tracking-pending">Tracking updates will appear here when the store creates a fulfillment record.</p>}
+    <CustomerOrderTracking order={order} location={location} realtimeConnected={realtimeConnected}/>
   </div></details>;
+}
+
+function ProductDetails({ shop }: { shop: StorefrontModel }) {
+  const detail = shop.detail;
+  if (!detail) return null;
+  const family = componentFamily(detail);
+  const variants = detail.item_type === "component" && family ? shop.parts.filter((part) => componentFamily(part) === family && part.compatible_bike_id) : [];
+  const needsFit = variants.length > 0 && (!detail.compatible_bike_id || shop.selectedPartsBike !== detail.compatible_bike_id);
+  const fitName = compatibleBikeName(detail, shop.items);
+  function chooseFit(bikeId: string) {
+    shop.setSelectedPartsBike(bikeId);
+    const variant = variants.find((part) => part.compatible_bike_id === bikeId);
+    if (variant) shop.setDetail(variant);
+  }
+  return <div className="product-detail-layout"><Image src={assetPath(productPresentation(detail).image)} alt={`${detail.name} illustrative product image`} width={1200} height={800} unoptimized/><div><p className="store-kicker">{productPresentation(detail).category}</p><h3>{detail.compatible_bike_id ? detail.name : productPresentation(detail).caption}</h3>{fitName && <p className="part-compatibility-label"><Icon name="check" size={14}/>Designed for {fitName}</p>}<p className="detail-price">{Number(detail.sale_price) > 0 ? money(detail.sale_price) : "Not available to order yet"}</p><p className="product-availability"><i/>{shop.availability(detail)}</p>{variants.length > 0 && <label className="store-field part-detail-fit">Choose bike fit<select value={shop.selectedPartsBike === detail.compatible_bike_id ? detail.compatible_bike_id ?? "" : ""} onChange={(event) => chooseFit(event.target.value)}><option value="">Choose the bike this part is for</option>{variants.map((part) => <option key={part.id} value={part.compatible_bike_id ?? ""}>{compatibleBikeName(part, shop.items) ?? part.name}</option>)}</select></label>}{detail.item_type === "component" && !detail.compatible_bike_id && !variants.length && <p className="parts-fit-help">General component. Specific bike compatibility has not been recorded; confirm fit with the store.</p>}<label className="store-field">Pickup store<select value={shop.selectedLocation} onChange={(event) => shop.setSelectedLocation(event.target.value)}>{shop.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><button className="store-button" disabled={Number(detail.sale_price) <= 0 || needsFit} onClick={() => { shop.addToCart(detail); shop.setDetail(null); shop.setCartOpen(true); }}>{needsFit ? "Choose bike fit first" : "Add to bag"}<Icon name="bag"/></button><small className="cart-fineprint">Product imagery is illustrative. Sales tax is calculated for the selected pickup store.</small></div><BuildConnections shop={shop}/></div>;
 }
 
 function BuildConnections({ shop }: { shop: StorefrontModel }) {

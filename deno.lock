@@ -11,13 +11,18 @@
     "packageJson": {
       "dependencies": [
         "npm:@electric-sql/pglite@0.5.16",
+        "npm:@playwright/test@^1.65.1",
         "npm:@supabase/ssr@~0.6.1",
         "npm:@supabase/supabase-js@^2.57.0",
+        "npm:@types/jsbarcode@^3.11.4",
         "npm:@types/node@^22.18.0",
         "npm:@types/react-dom@^19.1.0",
         "npm:@types/react@^19.1.0",
+        "npm:@zxing/browser@~0.2.1",
+        "npm:@zxing/library@0.23",
         "npm:eslint-config-next@^15.5.0",
         "npm:eslint@^9.34.0",
+        "npm:jsbarcode@^3.12.3",
         "npm:next@^15.5.0",
         "npm:react-dom@^19.1.0",
         "npm:react@^19.1.0",

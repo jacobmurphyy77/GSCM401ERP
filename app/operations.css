@@ -1,0 +1,37 @@
+.erp-shell { --accent: #496d88; --ink: #26333e; --canvas: #f3f5f7; --line: #e0e5eb; }
+.sidebar { background: #232c35; overflow-y: auto; }
+.sidebar nav { gap: .18rem; }
+.nav-entry { display: flex; align-items: center; gap: .3rem; border-radius: .55rem; }
+.nav-entry.active { background: #344552; }
+.nav-entry .nav-item { flex: 1; min-width: 0; padding: .65rem .65rem; }
+.nav-entry .nav-item.selected { background: transparent; }
+.task-badge { min-width: 25px; height: 25px; border: 1px solid #516170; border-radius: 8px; background: #303d48; color: #d5e2ec; font-size: 11px; margin-right: .45rem; }
+.task-badge.urgent { background: #5b453a; border-color: #80634e; color: #ffe2b7; }
+.workflow-total { background: #edf2f6; color: #49677e; padding: .7rem .9rem; border-radius: 10px; font-size: .8rem; white-space: nowrap; }
+.workflow-steps { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: .7rem; }
+.workflow-steps button { position: relative; display: grid; gap: .7rem; padding: 1rem; border: 1px solid #dde5eb; border-radius: 12px; background: linear-gradient(160deg,#fafcfd,#f0f4f7); text-align: left; color: #293945; }
+.workflow-steps button > span { color: #54758e; font-size: .7rem; text-transform: uppercase; letter-spacing: .07em; }
+.workflow-steps strong { font-size: .88rem; }
+.workflow-steps small { color: #71818f; line-height: 1.6; font-size: .75rem; }
+.workflow-steps b { justify-self: end; color: #6e8ba0; }
+.workflow-priorities { display: grid; margin-top: 1.2rem; }
+.workflow-priorities button { display: flex; align-items: center; gap: .8rem; border: 0; border-top: 1px solid #edf0f3; padding: .85rem 0; background: white; text-align: left; color: #354653; }
+.workflow-priorities button > span:nth-child(2) { flex: 1; }
+.workflow-priorities small, .task-card small { display: block; margin-top: .3rem; color: #788694; line-height: 1.5; font-size: .75rem; }
+.workflow-priorities b { font-size: .75rem; color: #52758f; }
+.task-dot { flex: 0 0 8px; height: 8px; border-radius: 50%; background: #7696a7; }
+.task-dot.urgent { background: #b5855a; }
+.task-list { display: grid; gap: .7rem; }
+.task-card { display: flex; gap: .8rem; align-items: center; width: 100%; border: 1px solid #e0e6eb; border-radius: 8px; background: #fafcfd; padding: 1rem; text-align: left; color: #344855; }
+.task-card > span:nth-child(2) { flex: 1; }
+.workspace-tools { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin: 0 0 1rem; }
+.workspace-tools input { flex: 1; min-width: 180px; }
+.focused-record { display: flex; justify-content: space-between; align-items: center; padding: .7rem 1rem; background: #eaf1f5; border-radius: 8px; margin: 0 0 1rem; }
+.system-tools { display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 1rem; }
+.system-tools article { border: 1px solid #e0e6eb; padding: 1.2rem; border-radius: 12px; }
+.system-tools p { color: #6e7f8d; line-height: 1.7; font-size: .85rem; }
+.variant-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.pos-receipt { padding: 1rem; margin: 1rem 0; border: 1px dashed #afbfca; background: #fbfcfd; }
+@media(max-width:1100px) { .workflow-steps { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@media(max-width:700px) { .workflow-steps { grid-template-columns: 1fr; } .workflow-steps button { gap: .45rem; } .workflow-priorities b { display: none; } .nav-entry { flex: 0 0 auto; } .variant-selectors { grid-template-columns: 1fr; } }
+@media print { .sidebar,.topbar,.workspace-tools,.notice,.barcode-scanner { display:none!important; } .erp-shell { display:block; } }

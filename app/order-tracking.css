@@ -1,0 +1,70 @@
+.wcw-order-tracking { --tracking-blue: #587e9a; --tracking-ink: #2b3d4b; margin: 20px 0; padding: 24px; border: 1px solid #dce5eb; border-radius: 10px; background: #f8fafb; color: var(--tracking-ink); }
+.wcw-tracking-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
+.wcw-tracking-eyebrow { margin: 0 0 7px; color: #6d8495; font-size: 9px; letter-spacing: .16em; font-weight: 700; }
+.wcw-tracking-heading h3 { margin: 0; color: var(--tracking-ink); font-size: 23px; letter-spacing: -.035em; font-weight: 600; }
+.wcw-tracking-update-badge { display: inline-flex; align-items: center; flex-shrink: 0; gap: 6px; border: 1px solid #d9e5ed; border-radius: 30px; padding: 6px 9px; color: #637d8f; background: #fff; font-size: 8px; }
+.wcw-tracking-update-badge i { width: 5px; height: 5px; background: #99acba; border-radius: 50%; }
+.wcw-tracking-update-badge.is-connected i { background: #4f8874; }
+.wcw-tracking-description { margin: 12px 0 18px; font-size: 11px; line-height: 1.8; color: #718290; max-width: 65ch; }
+.wcw-tracking-route { overflow: hidden; border: 1px solid #e0e8ee; border-radius: 7px; background: #f0f5f8; }
+.wcw-tracking-route svg { width: 100%; height: auto; display: block; max-height: 170px; }
+.wcw-tracking-route[data-route-state="inactive"] svg { filter: grayscale(1); opacity: .5; }
+.wcw-route-labels { display: flex; justify-content: space-between; gap: 20px; padding: 0 18px 12px; }
+.wcw-route-labels > span { display: grid; gap: 4px; max-width: 48%; }
+.wcw-route-labels > span:last-child { text-align: right; }
+.wcw-route-labels strong { font-size: 10px; font-weight: 650; }
+.wcw-route-labels small { color: #768b9a; font-size: 8px; line-height: 1.5; }
+.wcw-route-caption { margin: 0; padding: 9px 12px; text-align: center; color: #7a8e9d; font-size: 8px; background: #e9f0f5; }
+.wcw-order-milestones { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 24px 0; padding: 0; }
+.wcw-order-milestones[data-terminal="true"] { grid-template-columns: 1fr 1fr; }
+.wcw-order-milestones li { position: relative; min-width: 0; padding-right: 10px; }
+.wcw-order-milestones li:not(:last-child)::after { content: ""; position: absolute; top: 10px; left: 23px; right: 0; height: 2px; background: #dbe4eb; }
+.wcw-order-milestones li.is-complete:not(:last-child)::after { background: #89a6bb; }
+.wcw-milestone-dot { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 2px solid #cfdae2; border-radius: 50%; background: #f8fafb; color: white; font-size: 11px; }
+.wcw-order-milestones .is-complete .wcw-milestone-dot { background: #6488a2; border-color: #6488a2; }
+.wcw-order-milestones .is-current .wcw-milestone-dot { border-color: #6488a2; box-shadow: inset 0 0 0 4px #f8fafb; background: #6488a2; }
+.wcw-order-milestones li > div { display: grid; align-content: start; gap: 5px; padding-top: 10px; }
+.wcw-order-milestones strong { color: #a2b0ba; font-size: 9px; line-height: 1.5; font-weight: 600; }
+.wcw-order-milestones .is-complete strong, .wcw-order-milestones .is-current strong { color: #3f5a6e; }
+.wcw-order-milestones time, .wcw-order-milestones small { color: #8899a6; font-size: 8px; line-height: 1.6; max-width: 95px; }
+.wcw-fulfillment-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px; padding: 16px 0; border-top: 1px solid #e2e9ee; border-bottom: 1px solid #e2e9ee; }
+.wcw-fulfillment-facts > div { display: grid; align-content: start; gap: 5px; }
+.wcw-fulfillment-facts span { color: #8c9ba6; font-size: 8px; letter-spacing: .025em; }
+.wcw-fulfillment-facts strong { color: #466075; font-size: 10px; line-height: 1.6; font-weight: 600; }
+.wcw-fulfillment-facts small { color: #8899a6; font-size: 8px; line-height: 1.6; }
+.wcw-tracking-estimate strong { color: #9c774a; }
+.wcw-tracking-reference { display: flex; gap: 11px; align-items: center; flex-wrap: wrap; margin: 15px 0; font-size: 9px; color: #8194a2; }
+.wcw-tracking-reference strong { color: #4c687e; font-family: monospace; letter-spacing: .05em; }
+.wcw-tracking-reference > span:last-child { margin-left: auto; text-transform: capitalize; background: #e7eff5; color: #5b7b93; border-radius: 20px; padding: 4px 8px; font-size: 8px; }
+.wcw-tracking-activity { margin-top: 20px; }
+.wcw-tracking-activity h4 { margin: 0 0 16px; color: #4e687b; font-size: 11px; font-weight: 600; }
+.wcw-tracking-activity ol { list-style: none; padding: 0; margin: 0; }
+.wcw-tracking-activity li { position: relative; display: flex; align-items: flex-start; gap: 12px; padding-bottom: 17px; }
+.wcw-tracking-activity li:not(:last-child)::before { content: ""; position: absolute; top: 10px; bottom: 0; left: 4px; width: 1px; background: #dce6ed; }
+.wcw-tracking-activity li > span { width: 9px; height: 9px; flex-shrink: 0; margin-top: 3px; border-radius: 50%; border: 2px solid #b7cad8; background: #f8fafb; z-index: 1; }
+.wcw-tracking-activity li:first-child > span { border-color: #6488a2; background: #6488a2; }
+.wcw-tracking-activity li > div { display: grid; gap: 5px; }
+.wcw-tracking-activity strong { font-size: 10px; color: #587287; text-transform: capitalize; font-weight: 600; }
+.wcw-tracking-activity p { margin: 0; color: #7d919f; font-size: 10px; line-height: 1.65; }
+.wcw-tracking-activity time { color: #9aa8b2; font-size: 8px; }
+.wcw-tracking-no-activity { color: #8798a4; font-size: 10px; line-height: 1.8; margin: 16px 0 0; }
+.wcw-tracking-recorded { margin: 12px 0 0; color: #99a7b1; font-size: 8px; text-align: right; }
+.wcw-order-tracking.tone-attention { border-color: #e4d9c9; }
+.wcw-order-tracking.tone-attention .wcw-tracking-heading h3 { color: #92734e; }
+.wcw-order-tracking.tone-success .wcw-tracking-heading h3 { color: #467467; }
+.wcw-order-tracking.tone-muted .wcw-tracking-heading h3 { color: #85939e; }
+@media (max-width: 650px) {
+  .wcw-order-tracking { padding: 17px; }
+  .wcw-tracking-heading { display: block; }
+  .wcw-tracking-heading h3 { font-size: 21px; }
+  .wcw-tracking-update-badge { margin-top: 12px; }
+  .wcw-order-milestones, .wcw-order-milestones[data-terminal="true"] { grid-template-columns: 1fr; margin: 20px 0; }
+  .wcw-order-milestones li { display: flex; gap: 12px; padding: 0 0 18px; }
+  .wcw-order-milestones li > div { padding-top: 3px; }
+  .wcw-order-milestones li:not(:last-child)::after { top: 24px; bottom: 0; left: 10px; right: auto; width: 2px; height: auto; }
+  .wcw-milestone-dot { flex-shrink: 0; }
+  .wcw-order-milestones time, .wcw-order-milestones small { max-width: none; }
+  .wcw-fulfillment-facts { grid-template-columns: 1fr 1fr; }
+  .wcw-route-labels { padding: 0 12px 10px; }
+  .wcw-route-labels strong { font-size: 9px; }
+}
