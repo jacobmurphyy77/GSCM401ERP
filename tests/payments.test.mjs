@@ -9,7 +9,7 @@ async function loadTs(path) {
   return import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
 }
 const { validatePaidSession, requireSandboxKey } = await loadTs("../supabase/functions/_shared/payment-validation.ts");
-const { cartMatchesOrder, checkoutAttempt, checkoutFingerprint } = await loadTs("../src/lib/checkout.ts");
+const { cancelOrderCheckout, cartMatchesOrder, checkoutAttempt, checkoutFingerprint } = await loadTs("../src/lib/checkout.ts");
 const { checkoutSessionParameters, requestStripeSession, stripeFailure } = await loadTs("../supabase/functions/_shared/stripe-request.ts");
 const user = "10000000-0000-0000-0000-000000000001";
 const otherUser = "10000000-0000-0000-0000-000000000002";
@@ -99,6 +99,38 @@ test("a paid return only clears the bag when it still matches the purchased item
   assert.equal(cartMatchesOrder({ c: 1 }, [{ item_id: "a", quantity: 1 }]), false);
 });
 
+const unfinishedOrder = { id: user, status: "placed", payment_status: "unpaid", checkout_request_id: requestId, stripe_checkout_session_id: null,
+  location_id: "original-store", discount_code: "WRIGHTISCOOL", sales_order_lines: [{ item_id: "original-bike", quantity: 2 }] };
+
+test("cancelling a failed checkout recovers its original order and discount before expiring Stripe", async () => {
+  const calls = [];
+  const result = await cancelOrderCheckout(unfinishedOrder,
+    async (body) => { calls.push(["recover", body]); return { session_id: "cs_test_recovered123" }; },
+    async (body) => { calls.push(["cancel", body]); return { cancelled: true }; });
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(calls, [
+    ["recover", { request_id: requestId, location_id: "original-store", discount_code: "WRIGHTISCOOL", lines: [{ item_id: "original-bike", quantity: 2 }] }],
+    ["cancel", { order_id: user, session_id: "cs_test_recovered123" }],
+  ]);
+});
+
+test("an existing checkout cancels without creating a new session and a paid race stays paid", async () => {
+  const neverCreate = async () => { assert.fail("A linked session must not create another checkout"); };
+  const linked = { ...unfinishedOrder, stripe_checkout_session_id: "cs_test_existing123" };
+  const paid = await cancelOrderCheckout(linked, neverCreate, async () => ({ paid: true }));
+  assert.deepEqual(paid, { paid: true });
+  await assert.rejects(cancelOrderCheckout({ ...linked, payment_status: "paid" }, neverCreate, async () => { assert.fail("Paid orders cannot be cancelled"); }), /Only an unpaid/);
+});
+
+test("failed recovery or failed expiration never reports successful cancellation", async () => {
+  const neverCancel = async () => { assert.fail("Do not cancel without a verified sandbox session"); };
+  await assert.rejects(cancelOrderCheckout(unfinishedOrder, async () => { throw new Error("Provider unavailable"); }, neverCancel), /Provider unavailable/);
+  await assert.rejects(cancelOrderCheckout(unfinishedOrder, async () => ({ session_id: "cs_live_wrong" }), neverCancel), /could not be recovered/);
+  await assert.rejects(cancelOrderCheckout({ ...unfinishedOrder, stripe_checkout_session_id: "cs_test_existing123" }, async () => ({}), async () => ({ error: "Stripe could not expire checkout" })), /could not expire/);
+  const paid = await cancelOrderCheckout(unfinishedOrder, async () => ({ url: "https://example.test/?checkout=success&session_id=cs_test_completed123" }), async () => ({ paid: true }));
+  assert.equal(paid.paid, true);
+});
+
 test("database checkout is retry-safe, owner-scoped and verifies Stripe totals before posting once", async () => {
   const db = new PGlite();
   try {
@@ -163,5 +195,14 @@ test("database checkout is retry-safe, owner-scoped and verifies Stripe totals b
     await db.query("select public.cancel_unpaid_order($1)", [cancelled.order_id]);
     assert.equal((await stock()).reserved, before.reserved + 2);
     await assert.rejects(db.query("select public.confirm_test_checkout($1,'cs_test_unknown','pi_unknown',97042,'usd')", [cancelled.order_id]), /does not match order/);
+    await as("authenticated", otherUser);
+    const newBag = (await db.query("select public.prepare_online_checkout($1,$2,$3::jsonb,'WRIGHTISCOOL') result",
+      ["20000000-0000-0000-0000-000000000004", store, JSON.stringify([{ item_id: wheel, quantity: 1 }])])).rows[0].result;
+    assert.equal(newBag.discount, 12.38); // cancelling the unfinished order releases first-order eligibility
+    assert.equal(newBag.total, 75.24);
+    assert.notEqual(newBag.order_id, cancelled.order_id);
+    await as("service_role");
+    await db.query("select public.cancel_unpaid_order($1)", [newBag.order_id]);
+    assert.equal((await stock()).reserved, before.reserved + 2);
   } finally { await db.close(); }
 });

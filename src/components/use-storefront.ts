@@ -5,14 +5,14 @@ import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/src/lib/supabase/client";
 import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock } from "@/src/lib/storefront";
 
-import { cartMatchesOrder, checkoutAttempt, checkoutFingerprint } from "@/src/lib/checkout";
+import { cancelOrderCheckout, cartMatchesOrder, checkoutAttempt, checkoutFingerprint, CheckoutReply, orderCheckoutRequest } from "@/src/lib/checkout";
 
 const checkoutFunction = process.env.NEXT_PUBLIC_CHECKOUT_FUNCTION || "create-checkout-session";
 
 export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
 export type CustomerOrder = {
   id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string;
-  estimated_available_at: string | null; location_id: string; discount_code: string | null; checkout_request_id: string | null; shipments: Shipment | Shipment[] | null;
+  estimated_available_at: string | null; location_id: string; discount_code: string | null; checkout_request_id: string | null; stripe_checkout_session_id: string | null; shipments: Shipment | Shipment[] | null;
   sales_order_lines: { item_id: string; quantity: number; unit_price: number; items: { name: string } | null }[];
 };
 type Promotion = { code: string; percent_off: number; first_order_only: boolean };
@@ -37,6 +37,7 @@ export function useStorefront() {
   const [discountCode, setDiscountCode] = useState("");
   const [appliedCode, setAppliedCode] = useState("");
   const [cartMessage, setCartMessage] = useState("");
+  const [checkoutRecovery, setCheckoutRecovery] = useState(false);
   const [detail, setDetail] = useState<CatalogItem | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -44,6 +45,7 @@ export function useStorefront() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const [accountMessage, setAccountMessage] = useState("");
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
   const [paidOrders, setPaidOrders] = useState<number | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
@@ -57,7 +59,13 @@ export function useStorefront() {
   const checkoutInProgress = useRef(false);
   const pendingAttempt = useRef<string | null>(null);
 
-  function clearCheckoutAttempt() {
+  function clearCheckoutAttempt(requestId?: string | null) {
+    if (requestId) {
+      try {
+        const saved = pendingAttempt.current ?? localStorage.getItem("wcw-checkout-attempt");
+        if (!saved || JSON.parse(saved).requestId !== requestId) return;
+      } catch { return; }
+    }
     pendingAttempt.current = null;
     try { localStorage.removeItem("wcw-checkout-attempt"); } catch { /* Storage is optional. */ }
   }
@@ -90,7 +98,7 @@ export function useStorefront() {
     setAccountLoading(true); setAccountError("");
     const [profile, customerOrders, paid] = await Promise.all([
       supabase.from("profiles").select("role").eq("id", userId).single(),
-      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,requested_at,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,items(name)),shipments(id,status,tracking_code,estimated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
+      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,stripe_checkout_session_id,requested_at,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,items(name)),shipments(id,status,tracking_code,estimated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
       supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("created_by", userId).eq("payment_status", "paid"),
     ]);
     if (profile.data) setRole(String(profile.data.role));
@@ -205,11 +213,29 @@ export function useStorefront() {
     setCartMessage(eligiblePromotion ? `${promotion.percent_off}% discount applied before sales tax.` : "This code is available on your first paid order only.");
   }
 
+  function showUnfinishedOrders() {
+    setCartOpen(false); setAccountOpen(true); setAccountMessage("Your earlier checkout is still open. Resume it, or cancel it before placing your new order. Your current bag stays saved.");
+    if (session) void loadAccount(session.user.id);
+  }
+
+  async function invokeCheckout(name: string, body: object): Promise<CheckoutReply> {
+    const { data, error } = await supabase.functions.invoke(name, { body });
+    if (error) {
+      let message = "We couldn’t update this checkout. Please refresh your orders and try again.";
+      if (error.context instanceof Response) {
+        try { const failure = await error.context.json(); message = failure.error ?? failure.message ?? message; } catch { /* Use the fallback. */ }
+      }
+      throw new Error(message);
+    }
+    if (!data || data.error) throw new Error(data?.error ?? "Checkout did not return a result. Please refresh your orders.");
+    return data;
+  }
+
   async function checkout() {
     if (!session) { openAuth("checkout"); return; }
     if (checkoutInProgress.current) return;
     if (!store || !totals.rows.length || catalogError) { setCartMessage("Choose a pickup store and add a product before checkout."); return; }
-    checkoutInProgress.current = true; setBusy(true); setCartMessage("");
+    checkoutInProgress.current = true; setBusy(true); setCartMessage(""); setCheckoutRecovery(false);
     try {
       const lines = totals.rows.map((item) => ({ item_id: item.id, quantity: cart[item.id] }));
       const code = appliedCode && discountPercent ? appliedCode : null;
@@ -223,6 +249,10 @@ export function useStorefront() {
       if (error?.context instanceof Response) { try { failure = await error.context.json(); } catch { /* Use fallback message. */ } }
       if (error || !data?.url) {
         if (failure?.reset_request) clearCheckoutAttempt();
+        if (String(failure?.error ?? "").includes("unfinished checkout")) {
+          setCheckoutRecovery(true);
+          setCartMessage("An earlier unpaid order is holding your first-order discount. View unfinished orders to resume or cancel it, then use this bag."); return;
+        }
         setCartMessage(failure?.error ?? "Secure payment is not available yet. Your bag is saved—please try again later."); return;
       }
       const destination = new URL(String(data.url));
@@ -236,24 +266,37 @@ export function useStorefront() {
 
   async function resumeOrder(order: CustomerOrder) {
     if (!order.checkout_request_id || checkoutInProgress.current) return;
-    checkoutInProgress.current = true; setBusy(true); setAccountError("");
+    checkoutInProgress.current = true; setBusy(true); setAccountError(""); setAccountMessage("");
     try {
-      const { data, error } = await supabase.functions.invoke(checkoutFunction, { body: {
-        request_id: order.checkout_request_id, location_id: order.location_id, discount_code: order.discount_code,
-        lines: order.sales_order_lines.map((line) => ({ item_id: line.item_id, quantity: line.quantity })),
-      } });
-      if (error || !data?.url) { setAccountError("This checkout could not be reopened. Refresh your orders and try again."); return; }
+      const data = await invokeCheckout(checkoutFunction, orderCheckoutRequest(order));
+      if (!data.url) throw new Error("This checkout could not be reopened. Refresh your orders and try again.");
       const destination = new URL(data.url);
       if (destination.protocol !== "https:" || (destination.hostname !== "checkout.stripe.com" && !(destination.origin === window.location.origin && destination.pathname === window.location.pathname))) throw new Error("Invalid checkout URL");
       window.location.assign(destination.href);
-    } catch { setAccountError("Couldn’t reconnect to Stripe. Please refresh your orders before paying again."); }
+    } catch (error) { setAccountError(error instanceof Error ? error.message : "Couldn’t reconnect to Stripe. Please refresh your orders before paying again."); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
+  }
+
+  async function cancelOrder(order: CustomerOrder) {
+    if (!session || checkoutInProgress.current) return;
+    checkoutInProgress.current = true; setBusy(true); setAccountError(""); setAccountMessage("Checking the payment session before cancelling…");
+    try {
+      const result = await cancelOrderCheckout(order,
+        (body) => invokeCheckout(checkoutFunction, body),
+        (body) => invokeCheckout("cancel-checkout-session", body));
+      if (result.cancelled) {
+        clearCheckoutAttempt(order.checkout_request_id); setCheckoutRecovery(false); setCartMessage("");
+        setAccountMessage(`Order ${order.order_number} cancelled and its reserved stock released. Your current bag is saved; you can try checkout again.`);
+      } else setAccountMessage(`Order ${order.order_number} was already paid. It has been confirmed instead of cancelled.`);
+      await loadAccount(session.user.id); await refreshCatalog();
+    } catch (error) { setAccountMessage(""); setAccountError(error instanceof Error ? error.message : "Cancellation could not be confirmed. Refresh your orders before paying again."); }
     finally { checkoutInProgress.current = false; setBusy(false); }
   }
 
   async function signOut() {
     const { error } = await supabase.auth.signOut();
     if (error) { setAccountError("We couldn’t sign you out. Please try again."); return; }
-    setAccountOpen(false); setNotice("You’re signed out.");
+    setAccountOpen(false); setAccountMessage(""); setCheckoutRecovery(false); setNotice("You’re signed out.");
   }
 
   function availability(item: CatalogItem) {
@@ -268,9 +311,9 @@ export function useStorefront() {
 
   return { items, bikes, parts, bom, allLocations, locations, stock, promotion, catalogLoading, catalogError, selectedLocation, setSelectedLocation, category, setCategory,
     cart, cartOpen, setCartOpen, discountCode, setDiscountCode, appliedCode, discountPercent, cartMessage, detail, setDetail, session, authReady, role,
-    accountOpen, setAccountOpen, accountLoading, accountError, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
+    accountOpen, setAccountOpen, accountLoading, accountError, accountMessage, checkoutRecovery, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
     setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, addToCart, changeQuantity,
-    openAuth, authenticate, applyDiscount, checkout, resumeOrder, signOut, availability };
+    openAuth, authenticate, applyDiscount, checkout, resumeOrder, cancelOrder, showUnfinishedOrders, signOut, availability };
 }
 
 export type StorefrontModel = ReturnType<typeof useStorefront>;

@@ -69,7 +69,7 @@ Also check:
 - Cancel checkout using Stripe's back-to-store link. The order becomes cancelled, reserved stock releases, and the bag remains saved.
 - Use decline test card `4000 0000 0000 0002`. The order must stay unpaid; then use the success test card on that same checkout.
 - Refresh the successful return page or resend its `checkout.session.completed` event in Stripe. The order, ledger entries, and email outbox must not duplicate.
-- Reopen an unfinished order using **My orders → Resume secure checkout**.
+- Reopen an unfinished order using **My orders → Resume secure checkout**. Removing items from the bag does not cancel an order already submitted. To use a different bag with a first-order discount, cancel the old unpaid order in **My orders → Cancel unpaid order**. Cancellation recovers/expires the original Stripe session before releasing stock, including orders whose earlier Stripe request failed. A completed payment is confirmed instead of cancelled. The current bag is preserved.
 
 ## Order confirmation email is a separate setup
 
