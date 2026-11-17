@@ -2,6 +2,8 @@
 
 The source is prepared for Stripe Checkout. Payment is not connected until the database update, four Edge Functions, secrets, and webhook below are installed. GitHub Pages only hosts the browser app; Stripe secrets stay in Supabase.
 
+The connected project's checkout handler is deployed at `/functions/v1/quick-responder`. The Pages build uses `NEXT_PUBLIC_CHECKOUT_FUNCTION=quick-responder` for both new and resumed orders. The handler source below keeps the descriptive name `create-checkout-session`; its deployed URL slug, rather than its editor title, determines the frontend setting. If deploying that source under a different slug, set `NEXT_PUBLIC_CHECKOUT_FUNCTION` to match and rebuild the frontend. This setting is public and contains no credentials.
+
 ## 1. Supabase secrets
 
 In [this Supabase project](https://supabase.com/dashboard/project/skfmrqrsmnsmoniyuzdq/functions/secrets), open **Edge Functions → Secrets** and save:

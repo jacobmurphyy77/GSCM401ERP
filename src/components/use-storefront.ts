@@ -7,6 +7,8 @@ import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCa
 
 import { cartMatchesOrder, checkoutAttempt, checkoutFingerprint } from "@/src/lib/checkout";
 
+const checkoutFunction = process.env.NEXT_PUBLIC_CHECKOUT_FUNCTION || "create-checkout-session";
+
 export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
 export type CustomerOrder = {
   id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string;
@@ -216,7 +218,7 @@ export function useStorefront() {
       const attempt = checkoutAttempt(previous, checkoutFingerprint(session.user.id, store.id, lines, code), () => crypto.randomUUID());
       pendingAttempt.current = JSON.stringify(attempt);
       try { localStorage.setItem("wcw-checkout-attempt", pendingAttempt.current); } catch { /* Storage is optional. */ }
-      const { data, error } = await supabase.functions.invoke("create-checkout-session", { body: { request_id: attempt.requestId, location_id: store.id, lines, discount_code: code } });
+      const { data, error } = await supabase.functions.invoke(checkoutFunction, { body: { request_id: attempt.requestId, location_id: store.id, lines, discount_code: code } });
       let failure = data;
       if (error?.context instanceof Response) { try { failure = await error.context.json(); } catch { /* Use fallback message. */ } }
       if (error || !data?.url) {
@@ -236,7 +238,7 @@ export function useStorefront() {
     if (!order.checkout_request_id || checkoutInProgress.current) return;
     checkoutInProgress.current = true; setBusy(true); setAccountError("");
     try {
-      const { data, error } = await supabase.functions.invoke("create-checkout-session", { body: {
+      const { data, error } = await supabase.functions.invoke(checkoutFunction, { body: {
         request_id: order.checkout_request_id, location_id: order.location_id, discount_code: order.discount_code,
         lines: order.sales_order_lines.map((line) => ({ item_id: line.item_id, quantity: line.quantity })),
       } });
