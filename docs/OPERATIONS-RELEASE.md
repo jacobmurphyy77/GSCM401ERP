@@ -2,15 +2,19 @@
 
 The storefront and employee workspace are a static Next.js app on GitHub Pages. Supabase remains the only operational database and authentication service. No local computer or development server is needed to run the hosted system.
 
-## Release status and remaining access boundary
+## Release status
 
 The source includes barcode labels/camera scanning, employee task queues, filtered reports, customer order journeys, supplier settings and payments, bike-specific components, and manager employee creation. The migration and function are prepared for the existing project `skfmrqrsmnsmoniyuzdq`.
 
-The connected Supabase plugin is disabled by the workspace administrator, the cloud browser is signed out, and no Supabase administration credential is bound to this execution environment. The agent therefore cannot apply the upgrade or deploy the manager function autonomously. Public Supabase keys cannot perform those administration actions. Existing payments and operational data are preserved; live deployment of these two backend artifacts must be completed through an authorized Supabase session.
+Read-only checks on November 17, 2026 confirm that the hosted storefront and employee pages load with all their script bundles. The live database contains 47 active items, including all 35 bike-specific components, and exposes the new exchange and supplier-payment tables. Every bike has seven matching BOM components; all active barcodes are present and unique; variant prices match the approved prices; and no stock row is negative or over-reserved. The first-order discount is 15%.
 
-The shared-browser handoff did not display a panel for the user. A private plugin package using Supabase's official MCP endpoint was also prepared in [`integrations/wasatch-erp-supabase`](../integrations/wasatch-erp-supabase), but registration was rejected: "You do not have permission to use plugins with MCPs. Contact your workspace admin for access." It is unregistered and unauthenticated. The dashboard steps below remain the available activation path; no private API key needs to be pasted into chat.
+The live `manage-employees`, `quick-responder`, `verify-checkout-session`, and `cancel-checkout-session` functions answer browser preflight requests and reject unauthenticated requests. These checks confirm deployment and basic access protection; they do not prove successful manager account creation or a complete Stripe payment. Those live workflows still require an authorized user session. Physical camera/printed-label scanning also requires the demonstration device. Confirmation email delivery remains tabled.
+
+Direct administration by the agent remains unavailable: the shared-browser panel did not open and private MCP-plugin registration was rejected by host permissions. The prepared connection package in [`integrations/wasatch-erp-supabase`](../integrations/wasatch-erp-supabase) remains unregistered. No private API key needs to be pasted into chat.
 
 ## Activate the backend
+
+**No npm or terminal is needed for these dashboard steps.** The live checks above indicate that the catalog/workflow upgrade and manager function have now been deployed. Use these steps for a future deployment or if a setup check fails; you do not need to repeat them just because an npm command appears later in this document.
 
 1. In Supabase SQL Editor, run the entire file [`supabase/rollout/20261117_operations_upgrade.sql`](../supabase/rollout/20261117_operations_upgrade.sql). This combines migrations **004** and **005** and requires the already-installed **001–003**. Do not rerun the foundation or reset the project. The final result should show the upgraded catalog and the workflow migration status. Existing completed orders, reservations and old production recipes are retained.
 2. Deploy [`supabase/dashboard-deploy/manage-employees.ts`](../supabase/dashboard-deploy/manage-employees.ts) as an Edge Function whose **endpoint URL ends in `/manage-employees`**. The editor's title can differ from its URL slug; the URL is what the app calls. Keep Verify JWT enabled. The function checks the caller's current manager role again before listing or creating users. It uses Supabase's server-provided credentials and requires no new secrets. It never sends an invitation email.
@@ -18,7 +22,7 @@ The shared-browser handoff did not display a panel for the user. A private plugi
 
 The CLI alternative is `supabase functions deploy manage-employees --project-ref skfmrqrsmnsmoniyuzdq --use-api` from this checkout after a normal authorized `supabase login`. It does not apply SQL or reset any data.
 
-Run `npm run prepare:operations` after changing either migration or the manager function to regenerate the deployment copies.
+The two linked files are already prepared. Refresh the website after dashboard deployment; no command needs to be run on your computer.
 
 ## What changes in stored data
 
@@ -46,8 +50,14 @@ Run `npm run prepare:operations` after changing either migration or the manager 
 
 ## Verification
 
+On November 17, 2026, all **66 automated tests** and **4 browser tests** passed, along with lint, TypeScript checks and the GitHub Pages build. Regenerating the deployment copies produced no changes.
+
 `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build:pages` verify the code. The suites exercise real SQL in PGlite with auth/RLS stubs, migration reruns, inventory/value preservation, barcode encoding/decoding, variant retail/production stock sharing, tax/return/exchange accounting, payment and pickup retries, authorization, reports, and task counts.
 
 `npx playwright test` runs a separate UI harness with a local SQL-generated fixture and fully intercepted Supabase requests. Its screenshots and browser checks do not prove authenticated access to the real project or physical camera performance. Test fixtures are never loaded into the hosted application's real database.
 
 After backend activation, verify live with the team's own accounts: scan a printed label, sell and return/exchange an item, receive a PO, build a bike, prepare/collect a paid order, review its customer timeline and filtered reports, and create/sign in as an employee. These are general verification steps, not a prepared demo scenario; the professor can select inputs and order.
+
+## Developer maintenance only
+
+`npm` runs development commands inside a checked-out copy of the source code. `npm run prepare:operations` only regenerates the combined SQL file and the standalone manager-function copy after a developer edits their sources. It does not deploy the website or modify Supabase. It has already been run for this release; people using the hosted ERP or following the dashboard setup can skip it.
