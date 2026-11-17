@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireSandboxKey, StripeSession, validatePaidSession } from "./payment-validation.ts";
+import { requestStripeSession } from "./stripe-request.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,18 +23,7 @@ export async function customerContext(request: Request) {
   return { customer, user: data.user, stripeSecret, admin: createClient(url, service, { auth: { persistSession: false } }) };
 }
 
-export async function stripeRequest(secret: string, path: string, body?: URLSearchParams, idempotencyKey?: string): Promise<StripeSession> {
-  const response = await fetch(`https://api.stripe.com/v1/${path}`, {
-    method: body ? "POST" : "GET",
-    headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/x-www-form-urlencoded", ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
-    body,
-    signal: AbortSignal.timeout(15000),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error("Stripe could not process this checkout request. Please retry.");
-  if (result.livemode !== false || !String(result.id).startsWith("cs_test_")) throw new Error("Only Stripe sandbox checkout is enabled.");
-  return result;
-}
+export const stripeRequest = requestStripeSession;
 
 export async function confirmPayment(admin: Awaited<ReturnType<typeof customerContext>>["admin"], session: StripeSession) {
   const params = validatePaidSession(session);

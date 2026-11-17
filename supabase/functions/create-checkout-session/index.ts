@@ -1,4 +1,5 @@
 import { corsHeaders, customerContext, json, stripeRequest } from "../_shared/checkout.ts";
+import { checkoutSessionParameters } from "../_shared/stripe-request.ts";
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -28,17 +29,7 @@ Deno.serve(async (request) => {
 
     // The same order always uses the same Stripe idempotency key, including retries
     // after a network timeout. A Stripe error must not cancel a possibly-created session.
-    const params = new URLSearchParams({
-      mode: "payment", customer_email: user.email!, client_reference_id: order.order_id,
-      success_url: `${app.href.replace(/\/$/, "")}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${app.href.replace(/\/$/, "")}/?checkout=cancelled&order_id=${order.order_id}&session_id={CHECKOUT_SESSION_ID}`,
-      "payment_method_types[0]": "card",
-      "line_items[0][price_data][currency]": "usd",
-      "line_items[0][price_data][product_data][name]": `Wasatch Cycle Works order ${order.order_number}`,
-      "line_items[0][price_data][product_data][description]": "Demo order · Bikes and parts, pickup sales tax, and any applied discount. No real charge.",
-      "line_items[0][price_data][unit_amount]": String(Math.round(Number(order.total) * 100)),
-      "line_items[0][quantity]": "1", "metadata[order_id]": order.order_id, "metadata[order_number]": String(order.order_number),
-    });
+    const params = checkoutSessionParameters(order, user.email!, app.href);
     const session = await stripeRequest(stripeSecret, "checkout/sessions", params, `wcw-checkout-${order.order_id}`);
     const { data: saved, error: saveError } = await admin.rpc("set_checkout_session", { p_order_id: order.order_id, p_session_id: session.id });
     if (saveError || !saved) return json({ error: "Could not link your payment session. Your bag is saved; retry this checkout." }, 502);

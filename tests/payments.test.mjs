@@ -10,10 +10,65 @@ async function loadTs(path) {
 }
 const { validatePaidSession, requireSandboxKey } = await loadTs("../supabase/functions/_shared/payment-validation.ts");
 const { cartMatchesOrder, checkoutAttempt, checkoutFingerprint } = await loadTs("../src/lib/checkout.ts");
+const { checkoutSessionParameters, requestStripeSession, stripeFailure } = await loadTs("../supabase/functions/_shared/stripe-request.ts");
 const user = "10000000-0000-0000-0000-000000000001";
 const otherUser = "10000000-0000-0000-0000-000000000002";
 const requestId = "20000000-0000-0000-0000-000000000001";
 const session = { id: "cs_test_example", livemode: false, mode: "payment", status: "complete", payment_status: "paid", amount_total: 97042, currency: "usd", payment_intent: "pi_example", metadata: { order_id: user } };
+
+test("Checkout uses Dashboard payment methods and retries the stored total without the retired parameter", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (_url, options) => {
+      const params = options.body;
+      if ([...params.keys()].some((key) => key.startsWith("payment_method_types"))) {
+        return Response.json({ error: { message: "The payment_method_types parameter is no longer supported when creating a Checkout Session." } }, { status: 400 });
+      }
+      assert.equal(params.get("line_items[0][price_data][unit_amount]"), "97042");
+      assert.equal(params.get("metadata[order_id]"), user);
+      assert.equal(params.get("success_url"), "https://example.test/GSCM401ERP/?checkout=success&session_id={CHECKOUT_SESSION_ID}");
+      calls.push([options.headers["Idempotency-Key"], params.toString()]);
+      return Response.json(session);
+    };
+    const order = { order_id: user, order_number: 181, total: "970.42" };
+    for (let i = 0; i < 2; i++) {
+      const params = checkoutSessionParameters(order, "buyer@example.test", "https://example.test/GSCM401ERP/");
+      assert.equal((await requestStripeSession("sk_test_fixture", "checkout/sessions", params, "same-order-retry")).id, session.id);
+    }
+    assert.deepEqual(calls[0], calls[1]);
+    assert.throws(() => checkoutSessionParameters({ ...order, total: "invalid" }, "buyer@example.test", "https://example.test"), /stored order total/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Stripe errors explain the rejection without exposing provider credentials", () => {
+  const raw = "Invalid API Key provided: sk_test_private_key";
+  assert.match(stripeFailure(401, { error: { message: raw } }), /replace STRIPE_SECRET_KEY/);
+  assert.doesNotMatch(stripeFailure(401, { error: { message: raw } }), /sk_test_private_key/);
+  assert.match(stripeFailure(400, { error: { message: "Invalid URL: success_url" } }), /Invalid URL: success_url/);
+  const exposed = stripeFailure(400, { error: { message: "sk_test_secret pk_live_secret rk_test_secret whsec_signing Bearer token" } });
+  for (const value of ["sk_test_secret", "pk_live_secret", "rk_test_secret", "whsec_signing", "Bearer token"]) assert.equal(exposed.includes(value), false);
+  assert.match(stripeFailure(429, {}), /temporarily unavailable/);
+});
+
+test("Stripe requests preserve retry identity and report provider validation failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  try {
+    console.warn = () => {};
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, "https://api.stripe.com/v1/checkout/sessions");
+      assert.equal(options.method, "POST");
+      assert.equal(options.headers["Idempotency-Key"], "saved-order-id");
+      return Response.json({ error: { message: "Your account must have a business name to use Checkout." } }, { status: 400 });
+    };
+    await assert.rejects(requestStripeSession("sk_test_fixture", "checkout/sessions", new URLSearchParams({ mode: "payment" }), "saved-order-id"), /business name/);
+    globalThis.fetch = async () => Response.json({ ...session, livemode: true });
+    await assert.rejects(requestStripeSession("sk_test_fixture", "checkout/sessions"), /Only Stripe sandbox/);
+    globalThis.fetch = async () => Response.json(session);
+    assert.equal((await requestStripeSession("sk_test_fixture", "checkout/sessions")).id, session.id);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
 
 test("only complete, paid USD sandbox sessions can reach payment confirmation", () => {
   assert.equal(validatePaidSession(session).p_amount_total, 97042);

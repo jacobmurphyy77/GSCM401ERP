@@ -50,6 +50,8 @@ Stay in the **same Stripe sandbox** that provided the secret key.
 
 A Stripe CLI forwarding secret is different from the dashboard endpoint's secret. Use the secret for this specific dashboard destination.
 
+Payment methods are managed in the same sandbox's **Settings → Payment methods**. Keep Cards enabled and choose the card form for the demo. The handler omits the retired Checkout `payment_method_types` parameter. If Stripe rejects a request, inspect **Workbench → Logs → POST /v1/checkout/sessions**; the current handler also returns a useful error with credential values redacted. Retrying the saved checkout keeps the same order and Stripe idempotency key.
+
 ## 5. Publish the frontend and test
 
 Build/publish the source containing this update after step 2 is installed. Sign in to a customer account in the retail store, select pickup location, add bikes or parts, and apply `WRIGHTISCOOL` on the account's first paid order. At Stripe Checkout enter:
