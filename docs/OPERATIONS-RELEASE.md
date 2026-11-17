@@ -8,6 +8,8 @@ The source includes barcode labels/camera scanning, employee task queues, filter
 
 The connected Supabase plugin is disabled by the workspace administrator, the cloud browser is signed out, and no Supabase administration credential is bound to this execution environment. The agent therefore cannot apply the upgrade or deploy the manager function autonomously. Public Supabase keys cannot perform those administration actions. Existing payments and operational data are preserved; live deployment of these two backend artifacts must be completed through an authorized Supabase session.
 
+The shared-browser handoff did not display a panel for the user. A private plugin package using Supabase's official MCP endpoint was also prepared in [`integrations/wasatch-erp-supabase`](../integrations/wasatch-erp-supabase), but registration was rejected: "You do not have permission to use plugins with MCPs. Contact your workspace admin for access." It is unregistered and unauthenticated. The dashboard steps below remain the available activation path; no private API key needs to be pasted into chat.
+
 ## Activate the backend
 
 1. In Supabase SQL Editor, run the entire file [`supabase/rollout/20261117_operations_upgrade.sql`](../supabase/rollout/20261117_operations_upgrade.sql). This combines migrations **004** and **005** and requires the already-installed **001–003**. Do not rerun the foundation or reset the project. The final result should show the upgraded catalog and the workflow migration status. Existing completed orders, reservations and old production recipes are retained.
