@@ -279,9 +279,12 @@ test('employee handoffs remain visible and a customer journey refreshes through 
     const route=account.locator('.wcw-tracking-route');
     await expect(route).toHaveAttribute('data-stage','preparing');
     let previousMarker=await route.locator('.wcw-route-marker').getAttribute('transform');
+    for(const line of order.sales_order_lines as Row[])line.reserved_quantity=0;
+    await customer.clock.fastForward(5500);await expect(route).toHaveAttribute('data-stage','backorder');
+    previousMarker=await route.locator('.wcw-route-marker').getAttribute('transform');
     await page.goto('/GSCM401ERP/employee/');await page.getByRole('button',{name:'Sales orders',exact:true}).click();
     const card=page.locator(`[data-order-id="${order.id}"]`);
-    await card.getByRole('button',{name:'Pick & fulfill order',exact:true}).click();
+    await card.getByRole('button',{name:'Check stock & fulfill order',exact:true}).click();
     const drawer=page.getByRole('dialog',{name:`Order ${fixture.customerOrderNumber} · journey & actions`,exact:true});
     await expect(drawer.getByRole('button',{name:'Mark packed',exact:true})).toBeVisible();
     for(const [phase,next] of [['fulfilled','Mark packed'],['packed','Record transfer to pickup store'],['in_transit','Mark ready for pickup'],['ready','Record collection'],['complete',null]] as const){

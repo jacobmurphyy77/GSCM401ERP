@@ -327,9 +327,9 @@ export default function OperationsWorkspace() {
     if(retry.data)return String(retry.data.id);
     throw new Error(created.error?.message??"Tracking could not be created. Your order history remains available.");
   }
-  function openOrderJourney(orderId:string){setActiveOrderId(orderId);setOrderJourneyOpen(true);}
+  function openOrderJourney(orderId:string){setNotice("");setActiveOrderId(orderId);setOrderJourneyOpen(true);}
   async function advanceOrder(orderId:string,action:OrderAction){
-    setActiveOrderId(orderId);setOrderJourneyOpen(true);
+    setNotice("");setActiveOrderId(orderId);setOrderJourneyOpen(true);
     try {
     if(action==="fulfill"){
       const result=await supabase.rpc("fulfill_sales_order",{p_order_id:orderId});
@@ -466,7 +466,7 @@ export default function OperationsWorkspace() {
 
       </section>
       <PurchaseOrderDocument supabase={supabase} orderId={documentOrderId} onClose={()=>setDocumentOrderId(null)} onRecorded={refresh}/>
-      <OrderJourneyDrawer order={activeOrder} locations={locations} open={orderJourneyOpen} busy={busy} onClose={()=>setOrderJourneyOpen(false)} onAdvance={(id,action)=>runMutation(()=>advanceOrder(id,action))} onNavigate={module=>{setOrderJourneyOpen(false);if(module==="returns"&&activeOrder)setReturnOrder(activeOrder.id);goTo(module,module==="shipments"?activeOrder?.id:undefined);}}/>
+      <OrderJourneyDrawer feedback={notice} order={activeOrder} locations={locations} open={orderJourneyOpen} busy={busy} onClose={()=>setOrderJourneyOpen(false)} onAdvance={(id,action)=>runMutation(()=>advanceOrder(id,action))} onNavigate={module=>{setOrderJourneyOpen(false);if(module==="returns"&&activeOrder)setReturnOrder(activeOrder.id);goTo(module,module==="shipments"?activeOrder?.id:undefined);}}/>
     </main>
   );
 }
