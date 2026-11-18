@@ -135,10 +135,15 @@ test('simple operations overview follows an order and live planning drafts work 
   await expect(page.getByRole('table',{name:'Components for the remaining demand'})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('live-fulfillment-check.png'),fullPage:true});
   const inputValue = await page.getByLabel('Quantity',{exact:true}).inputValue();
+  const selectedBike = await page.getByRole('combobox',{name:'Bike',exact:true}).inputValue();
+  const selectedStore = await page.getByRole('combobox',{name:'Pickup store',exact:true}).inputValue();
   tables.inventory = tables.inventory.map(stock => ({...stock,on_hand:100000,reserved:0}));
+  tables.items.reverse(); tables.locations.reverse();
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
   await expect(page.getByText('Finished stock covers the request.',{exact:true})).toBeVisible();
   expect(await page.getByLabel('Quantity',{exact:true}).inputValue()).toBe(inputValue);
+  expect(await page.getByRole('combobox',{name:'Bike',exact:true}).inputValue()).toBe(selectedBike);
+  expect(await page.getByRole('combobox',{name:'Pickup store',exact:true}).inputValue()).toBe(selectedStore);
   workflow.failSupply = true;
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
   await expect(page.getByText(/Showing the last successful supply check/)).toBeVisible();

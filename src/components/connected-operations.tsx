@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { money } from '@/src/lib/storefront';
 import { operationsSummary, planFulfillment, type FulfillmentPlan, type PlanSnapshot, type PlanWork } from '@/src/lib/fulfillment-plan';
 import type { OperationTask, TaskModule } from '@/src/lib/operations';
@@ -28,21 +28,26 @@ export function FulfillmentCheck({ snapshot, error, onPlanAction }: SharedProps)
   const [itemId, setItemId] = useState('');
   const [locationId, setLocationId] = useState('');
   const [quantity, setQuantity] = useState('1');
+  useEffect(() => {
+    if (!snapshot) return;
+    setItemId(current => current || snapshot.items.find(item => item.item_type === 'bike')?.id || '');
+    setLocationId(current => current || snapshot.locations.find(location => location.location_type === 'storefront')?.id || '');
+  }, [snapshot]);
   if (!snapshot) return <p role="status" className="muted">{error || 'Loading current stock and supply…'}</p>;
   const bikes = snapshot.items.filter(item => item.item_type === 'bike');
   const stores = snapshot.locations.filter(location => location.location_type === 'storefront');
-  const selectedItem = bikes.find(item => item.id === itemId) ?? bikes[0];
-  const selectedStore = stores.find(location => location.id === locationId) ?? stores[0];
+  const selectedItem = bikes.find(item => item.id === itemId);
+  const selectedStore = stores.find(location => location.id === locationId);
   let plan: FulfillmentPlan | null = null;
   let validation = '';
   try { if (selectedItem && selectedStore) plan = planFulfillment(snapshot, selectedStore.id, [{ item_id: selectedItem.id, quantity: Number(quantity) }]); }
   catch (failure) { validation = failure instanceof Error ? failure.message : 'Check the request.'; }
   return <>
     <p className="muted">Try a new request against the same stock, orders, purchase orders and builds your team uses.</p>
-    <div className="fulfillment-fields"><label>Bike<select value={selectedItem?.id ?? ''} onChange={event => setItemId(event.target.value)}>{bikes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Quantity<input type="number" min="1" max="10000" step="1" value={quantity} onChange={event => setQuantity(event.target.value)}/></label><label>Pickup store<select value={selectedStore?.id ?? ''} onChange={event => setLocationId(event.target.value)}>{stores.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label></div>
+    <div className="fulfillment-fields"><label>Bike<select value={selectedItem?.id ?? ''} onChange={event => setItemId(event.target.value)}><option value="" disabled>Choose a bike</option>{bikes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Quantity<input type="number" min="1" max="10000" step="1" value={quantity} onChange={event => setQuantity(event.target.value)}/></label><label>Pickup store<select value={selectedStore?.id ?? ''} onChange={event => setLocationId(event.target.value)}><option value="" disabled>Choose a pickup store</option>{stores.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label></div>
     {error && <p role="status" className="notice">{error} Showing the last successful supply check.</p>}
     {validation && <p role="alert">{validation}</p>}
-    {!selectedItem && <p>No active bikes are configured.</p>}{!selectedStore && <p>No active pickup stores are configured.</p>}
+    {!selectedItem && <p>Choose an active bike to check its supply.</p>}{!selectedStore && <p>Choose an active pickup store to check its supply.</p>}
     {plan && selectedItem && <SupplyPlan snapshot={snapshot} plan={plan} disabled={!!error} onPlanAction={action => onPlanAction({ ...action, itemId: action.itemId || selectedItem.id })}/>}
   </>;
 }
