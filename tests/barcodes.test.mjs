@@ -3,7 +3,9 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import JsBarcode from "jsbarcode";
-import { MultiFormatReader, RGBLuminanceSource, BinaryBitmap, HybridBinarizer, BarcodeFormat, DecodeHintType } from "@zxing/library";
+import ZXing from "@zxing/library";
+
+const { MultiFormatReader, RGBLuminanceSource, BinaryBitmap, HybridBinarizer, BarcodeFormat, DecodeHintType } = ZXing;
 
 const compiled = ts.transpileModule(readFileSync(new URL("../src/lib/barcodes.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
 const { barcodeLabelData, cameraErrorMessage, findBarcodeItem, normalizeBarcode, printableBarcode } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
