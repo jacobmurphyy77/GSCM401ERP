@@ -4,6 +4,7 @@ import "./storefront.css";
 import "./operations.css";
 import "./reports.css";
 import "./order-tracking.css";
+import "./connected-operations.css";
 
 export const metadata: Metadata = {
   title: "Wasatch Cycle Works ERP",

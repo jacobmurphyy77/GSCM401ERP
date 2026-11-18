@@ -8,7 +8,9 @@ import { isEmployeeRole } from "@/src/lib/storefront";
 import { BarcodeLabels, BarcodeScanner } from "./barcode-tools";
 import { findBarcodeItem } from "@/src/lib/barcodes";
 import { operationTasks, readAllRows, TaskModule } from "@/src/lib/operations";
-import { OperationsHub, TaskBadge } from "./operations-hub";
+import { TaskBadge } from "./operations-hub";
+import { OperationsOverview, ConnectedOrderSupply, type PlanAction } from "./connected-operations";
+import type { PlanSnapshot, PlanWork } from "@/src/lib/fulfillment-plan";
 import { EmployeeManagement, EmployeePasswordChange } from "./employee-management";
 import { ReportsWorkspace } from "./reports-workspace";
 import { ProcurementSettings } from "./procurement-settings";
@@ -50,7 +52,7 @@ export default function OperationsWorkspace() {
   const [inventory, setInventory] = useState<Row[]>([]);
   const [orders, setOrders] = useState<Row[]>([]);
   const [mrp, setMrp] = useState<Row[]>([]);
-  const [pnl, setPnl] = useState<Row[]>([]);
+  const [, setPnl] = useState<Row[]>([]);
   const [, setTurnover] = useState<Row[]>([]);
   const [suppliers, setSuppliers] = useState<Row[]>([]);
   const [supplierChoices, setSupplierChoices] = useState<Supplier[]>([]);
@@ -107,10 +109,17 @@ export default function OperationsWorkspace() {
   const [activeOrderId,setActiveOrderId]=useState<string|null>(null);
   const [orderJourneyOpen,setOrderJourneyOpen]=useState(false);
   const [workHandoff,setWorkHandoff]=useState<{text:string;module:TaskModule;label:string}|null>(null);
+  const [supplySnapshot, setSupplySnapshot] = useState<PlanSnapshot | null>(null);
+  const supplyReady = !!supplySnapshot;
+  const [supplyError, setSupplyError] = useState('');
+  const [workspaceUpdatedAt, setWorkspaceUpdatedAt] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [plannedOrderId, setPlannedOrderId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const version=++refreshVersion.current;
-    const [itemResult, locationResult, customerResult, stockResult, orderResult, mrpResult, pnlResult, turnoverResult, supplierResult, supplierChoicesResult, poResult, workResult, returnResult, shipmentResult, discountResult, dispatchResult, readiness] = await Promise.all([
+    setRefreshing(true);
+    const [itemResult, locationResult, customerResult, stockResult, orderResult, mrpResult, pnlResult, turnoverResult, supplierResult, supplierChoicesResult, poResult, workResult, returnResult, shipmentResult, discountResult, dispatchResult, readiness, snapshotResult] = await Promise.all([
       supabase.from("items").select("*").eq("active", true).order("name"),
       supabase.from("locations").select("id,name,city,location_type,tax_rate,postal_code").eq("active", true).order("name"),
       supabase.from("customers").select("id,name,email").order("name"),
@@ -128,11 +137,16 @@ export default function OperationsWorkspace() {
       supabase.from("discounts").select("percent_off").eq("code", "WRIGHTISCOOL").eq("active", true).maybeSingle(),
       readAllRows((from,to)=>supabase.from("purchase_order_dispatches").select("id,purchase_order_id,recorded_at").order("recorded_at").range(from,to)),
       supabase.from("exchange_records").select("id",{head:true}).limit(0),
+      supabase.rpc("fulfillment_snapshot"),
     ]);
     if(version!==refreshVersion.current)return;
+    setRefreshing(false);
+    if (snapshotResult.error || !snapshotResult.data) setSupplyError('The live supply check could not refresh. Use Refresh to retry.');
+    else { setSupplySnapshot(snapshotResult.data as PlanSnapshot); setSupplyError(''); }
     setDispatchReady(!dispatchResult.error);
     const failed = [itemResult,locationResult,customerResult,stockResult,orderResult,mrpResult,pnlResult,turnoverResult,supplierResult,supplierChoicesResult,poResult,workResult,returnResult,shipmentResult].filter((result) => result.error);
     if (failed.length) setNotice(`Some workspace data could not refresh: ${failed[0].error?.message}`);
+    else setWorkspaceUpdatedAt(new Date().toISOString());
     if (itemResult.data) setItems(itemResult.data as Item[]);
     if (locationResult.data) {
       const rows = locationResult.data as Location[];
@@ -213,14 +227,18 @@ export default function OperationsWorkspace() {
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, queueRefresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "returns" }, queueRefresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales_order_lines" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "purchase_order_lines" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "bom_lines" }, queueRefresh)
 ;
+    if (supplyReady) channel = channel.on("postgres_changes", { event: "*", schema: "public", table: "order_work_links" }, queueRefresh);
     if(dispatchReady)channel=channel.on("postgres_changes", { event: "*", schema: "public", table: "purchase_order_dispatches" }, queueRefresh);
     channel.subscribe();
     const refreshOnFocus = () => { void refresh(); };
     window.addEventListener("focus", refreshOnFocus);
-    const fallbackRefresh = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, orderJourneyOpen?5000:20000);
+    const fallbackRefresh = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, orderJourneyOpen?5000:15000);
     return () => { clearTimeout(scheduled); void supabase.removeChannel(channel); window.removeEventListener("focus", refreshOnFocus); window.clearInterval(fallbackRefresh); };
-  }, [session, isStaff, supabase, refresh, orderJourneyOpen, dispatchReady]);
+  }, [session, isStaff, supabase, refresh, orderJourneyOpen, dispatchReady, supplyReady]);
 
   async function authenticate(event: FormEvent) {
     event.preventDefault(); setBusy(true); setNotice("");
@@ -260,8 +278,8 @@ export default function OperationsWorkspace() {
   async function createPurchaseOrder() {
     if (!selectedSupplier || !selectedWarehouse || !selectedComponent) return setNotice("Choose a supplier, warehouse, and component.");
     const item=items.find((row)=>row.id===selectedComponent);
-    const {data,error}=await supabase.rpc("create_purchase_order",{p_supplier_id:selectedSupplier,p_location_id:selectedWarehouse,p_lines:[{item_id:selectedComponent,quantity:Number(purchaseQuantity),unit_cost:Number(item?.standard_cost??0)}]});
-    setNotice(error?.message??"Purchase order created. Review its document and send it to the supplier."); if(!error) { setDocumentOrderId(String(data)); await refresh(); }
+    const {data,error}=await supabase.rpc(plannedOrderId ? "create_order_purchase" : "create_purchase_order",{...(plannedOrderId ? {p_order_id:plannedOrderId} : {}),p_supplier_id:selectedSupplier,p_location_id:selectedWarehouse,p_lines:[{item_id:selectedComponent,quantity:Number(purchaseQuantity),unit_cost:Number(item?.standard_cost??0)}]});
+    setNotice(error?.message??"Purchase order created. Review its document and send it to the supplier."); if(!error) { setPlannedOrderId(null); setDocumentOrderId(String(data)); await refresh(); }
   }
 
   async function receivePurchaseOrder(orderId:string,itemId:string,remaining:number) {
@@ -271,8 +289,8 @@ export default function OperationsWorkspace() {
 
   async function createProductionOrder() {
     if(!selectedBike||!selectedWarehouse) return setNotice("Choose a bike and warehouse.");
-    const {error}=await supabase.rpc("create_production_order",{p_item_id:selectedBike,p_location_id:selectedWarehouse,p_quantity:Number(productionQuantity)});
-    setNotice(error?.message??"Production order released."); if(!error) { setProductionGood(Number(productionQuantity)); setProductionScrapped(0); setProductionReason(""); await refresh(); }
+    const {error}=await supabase.rpc(plannedOrderId ? "create_order_production" : "create_production_order",{...(plannedOrderId ? {p_order_id:plannedOrderId} : {}),p_item_id:selectedBike,p_location_id:selectedWarehouse,p_quantity:Number(productionQuantity)});
+    setNotice(error?.message??"Production order released."); if(!error) { setPlannedOrderId(null); setProductionGood(Number(productionQuantity)); setProductionScrapped(0); setProductionReason(""); await refresh(); }
   }
 
   async function finishProductionOrder(work:Row) {
@@ -308,9 +326,38 @@ export default function OperationsWorkspace() {
     setNotice(error?.message ?? "Shipment timeline updated and synced live."); if (!error) { setShipmentNote(""); await refresh(); }
   }
 
-  function goTo(module: TaskModule, recordId?: string) { setModule(module); setFocusRecord(recordId ?? null); setSearch(""); if(module==="inventory"&&recordId&&items.some((item)=>item.id===recordId)){setAdjustItem(recordId);setTransferItem(recordId);} }
+  function goTo(module: TaskModule, recordId?: string) { setPlannedOrderId(null); setModule(module); setFocusRecord(recordId ?? null); setSearch(""); if(module==="orders"&&recordId&&orders.some(order=>order.id===recordId))setActiveOrderId(recordId); if(module==="inventory"&&recordId&&items.some((item)=>item.id===recordId)){setAdjustItem(recordId);setTransferItem(recordId);} }
+
+  function reviewSupplyAction(action: PlanAction) {
+    goTo(action.module);
+    setOrderJourneyOpen(false);
+    setPlannedOrderId(action.module === 'inventory' ? null : action.orderId ?? null);
+    setActiveOrderId(action.orderId ?? null);
+    setSelectedWarehouse(action.locationId);
+    if (action.module === 'purchasing') {
+      setSelectedComponent(action.itemId); setPurchaseQuantity(action.quantity);
+      const supplierId = items.find(item => item.id === action.itemId)?.supplier_id;
+      setSelectedSupplier(supplierId ?? '');
+    } else if (action.module === 'production') {
+      const target = orders.find(order => order.id === action.orderId);
+      const bike = action.itemId || ((target?.sales_order_lines as Row[] | undefined)?.find(line => items.some(item => item.id === line.item_id && item.item_type === 'bike'))?.item_id as string | undefined);
+      if (bike) setSelectedBike(bike);
+      setProductionQuantity(action.quantity);
+    } else {
+      const target = orders.find(order => order.id === action.orderId);
+      const bike = action.itemId || ((target?.sales_order_lines as Row[] | undefined)?.find(line => items.some(item => item.id === line.item_id && item.item_type === 'bike'))?.item_id as string | undefined);
+      if (bike) setTransferItem(bike);
+      setTransferFrom(action.locationId);
+      const warehouse = locations.find(location => location.id === action.locationId);
+      const pickup = locations.find(location => location.id === action.destinationId) ?? locations.find(location => location.location_type === 'storefront' && location.city === warehouse?.city);
+      if (pickup) setTransferTo(pickup.id);
+      setTransferQuantity(action.quantity);
+    }
+    setNotice('The supply check filled in a draft. Review these values; stock can change. Nothing is posted until you use this workspace’s action button.');
+  }
 
   function purchaseFromPlan(row: Row) {
+    setPlannedOrderId(null);
     setSelectedComponent(String(row.component_item_id)); setSelectedWarehouse(String(row.location_id)); setPurchaseQuantity(Number(row.suggested_order_quantity));
     const item=items.find((item)=>item.id===row.component_item_id); if(item?.supplier_id)setSelectedSupplier(item.supplier_id);
     setModule("purchasing");setFocusRecord(null);setSearch("");setNotice("The material plan filled in this purchase order. Review the supplier, location, quantity and cost before creating it.");
@@ -387,13 +434,9 @@ export default function OperationsWorkspace() {
   const subtotal = cartRows.reduce((total, item) => total + item.sale_price * cart[item.id], 0);
   const discountPreview = discountCode.toUpperCase() === "WRIGHTISCOOL" ? subtotal * promoPercent / 100 : 0;
   const store = locations.find((location) => location.id === selectedLocation);
-  const recentRevenue = pnl.reduce((total, row) => total + Number(row.revenue ?? 0), 0);
-  const currentStock = inventory.reduce((total, row) => total + Number(row.on_hand ?? 0), 0);
   const tasks = operationTasks({items, locations, inventory, orders, purchaseOrders, workOrders, mrp, shipments});
-  const lowStock = tasks.filter((task)=>task.module==="inventory").length;
   const fulfilledOrders = orders.filter((row) => ["fulfilled", "closed"].includes(String(row.status)));
   const activeOrders = orders.filter((row) => !["closed", "cancelled"].includes(String(row.status)));
-  const openOrders = orders.filter((row) => ["placed", "confirmed"].includes(String(row.status)));
   const selectedReturnOrder = orders.find((row) => row.id === returnOrder);
   const returnLines = (selectedReturnOrder?.sales_order_lines as Row[] | undefined) ?? [];
   const unshippedOrders = activeOrders.filter((row) => !row.shipments || (Array.isArray(row.shipments) && row.shipments.length === 0));
@@ -410,28 +453,20 @@ export default function OperationsWorkspace() {
     <main className="erp-shell">
       <aside className="sidebar">
         <Link href="/" className="sidebar-brand" aria-label="Back to Wasatch Cycle Works store"><Brand compact/></Link><span className="workspace-label">OPERATIONS WORKSPACE</span>
-        {isStaff ? <nav aria-label="ERP modules">{visibleModules.map((entry) => <div className={`nav-entry${module===entry.id?" active":""}`} key={entry.id}><button className={module===entry.id?"nav-item selected":"nav-item"} onClick={() => {setModule(entry.id);setFocusRecord(null);setSearch("");}}>{entry.label}</button><TaskBadge module={entry.id} label={entry.label} tasks={tasks} onNavigate={goTo}/></div>)}</nav> : <div className="customer-nav">Customer pickup store</div>}
+        {isStaff ? <nav aria-label="ERP modules">{visibleModules.map((entry) => <div className={`nav-entry${module===entry.id?" active":""}`} key={entry.id}><button className={module===entry.id?"nav-item selected":"nav-item"} onClick={() => {setPlannedOrderId(null);setModule(entry.id);setFocusRecord(null);setSearch("");}}>{entry.label}</button><TaskBadge module={entry.id} label={entry.label} tasks={tasks} onNavigate={goTo}/></div>)}</nav> : <div className="customer-nav">Customer pickup store</div>}
         <div className="side-user"><span className="avatar">{(profile?.display_name as string)?.slice(0,1)?.toUpperCase() || "U"}</span><div><strong>{profile?.display_name as string || session.user.email}</strong><span>{label(profile?.role)}</span></div></div>
         <Link href="/" className="sidebar-shop-link">← Customer storefront</Link><button className="link-button" onClick={() => supabase.auth.signOut()}>Sign out</button>
       </aside>
       <section className="main-area">
-        <header className="topbar"><div><p className="eyebrow">{isStaff ? modules.find((entry) => entry.id === module)?.label : "Customer store"}</p><h1>{isStaff ? (module === "overview" ? "Good day, team" : modules.find((entry) => entry.id === module)?.label) : "Shop bikes for pickup"}</h1></div><div className="live-pill"><i /> Live data</div></header>
+        <header className="topbar"><div><p className="eyebrow">{isStaff ? modules.find((entry) => entry.id === module)?.label : "Customer store"}</p><h1>{isStaff ? (module === "overview" ? "Good day, team" : modules.find((entry) => entry.id === module)?.label) : "Shop bikes for pickup"}</h1></div><div className="live-pill"><i /> {supplyError ? 'Check connection' : refreshing ? 'Checking data…' : workspaceUpdatedAt ? `Updated ${new Date(workspaceUpdatedAt).toLocaleTimeString()}` : 'Loading data…'}</div></header>
         {notice && <div className="notice banner" role="status">{notice}<button onClick={() => setNotice("")}>Dismiss</button></div>}
-        {activeOrder&&<section className="order-context" aria-label="Current order handoff"><div><strong>Following order {activeOrder.order_number}</strong><p>{orderNextStep(activeOrder).label}</p></div><div className="inline-actions"><button className="secondary" onClick={()=>setOrderJourneyOpen(true)}>Open order journey</button><button className="secondary" onClick={()=>goTo("shipments",activeOrder.id)}>Tracking & handoff →</button><button className="link-button" onClick={()=>{setActiveOrderId(null);setOrderJourneyOpen(false);}}>Clear order context</button></div></section>}
+        {activeOrder&&<section className="order-context" aria-label="Current order handoff"><div><strong>Following order {activeOrder.order_number}</strong><p>{orderNextStep(activeOrder).label}</p></div><div className="inline-actions"><button className="secondary" onClick={()=>setOrderJourneyOpen(true)}>Open order journey</button><button className="secondary" onClick={()=>goTo("shipments",activeOrder.id)}>Tracking & handoff →</button><button className="link-button" onClick={()=>{setActiveOrderId(null);setPlannedOrderId(null);setOrderJourneyOpen(false);}}>Clear order context</button></div></section>}
         {workHandoff&&<section className="order-context" aria-label="Next operational step"><p>{workHandoff.text}</p><div className="inline-actions"><button className="secondary" onClick={()=>goTo(workHandoff.module)}>{workHandoff.label} →</button><button className="secondary" onClick={()=>goTo("orders")}>Review customer orders →</button><button className="link-button" onClick={()=>setWorkHandoff(null)}>Dismiss</button></div></section>}
+        {plannedOrderId && <section className="order-context" aria-label="Linked work draft"><p>This new {module === 'purchasing' ? 'purchase' : 'build'} will be linked to order {String(orders.find(order => order.id === plannedOrderId)?.order_number ?? '')}.</p><button className="link-button" onClick={() => setPlannedOrderId(null)}>Make this general work instead</button></section>}
         <>
           {focusRecord && <div className="focused-record"><span>Showing the selected task record</span><button className="link-button" onClick={()=>setFocusRecord(null)}>Show all records</button></div>}
           {!["overview","reports","barcodes","employees","system"].includes(module) && <div className="workspace-tools"><input aria-label="Search current workspace" value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Search items, orders, locations, or barcodes"/><button className="secondary" onClick={()=>void refresh()}>Refresh data</button></div>}
-          {module === "overview" && <>
-            <OperationsHub tasks={tasks} onNavigate={goTo}/>
-            <div className="metric-grid">
-              <Metric label="Revenue · 12 months" value={money(recentRevenue)} note="From posted financial entries" />
-              <Metric label="Units on hand" value={currentStock.toLocaleString()} note={`Across ${locations.length} active locations`} />
-              <Metric label="Low stock" value={lowStock.toLocaleString()} note="At or below each item’s reorder point" />
-              <Metric label="Open orders" value={openOrders.length.toLocaleString()} note="Placed or confirmed orders" />
-            </div>
-            <section className="panel"><div className="panel-heading"><div><h2>Recent sales orders</h2><p>Sales, inventory, and fulfillment share the same records.</p></div><button className="secondary" onClick={() => setModule("orders")}>View orders</button></div><Rows rows={orders.slice(0,6)} columns={[["order_number","Order"],["status","Status"],["requested_at","Placed"],["total","Total"]]} moneyColumns={["total"]} /></section>
-          </>}
+          {module === "overview" && <OperationsOverview orders={orders as unknown as EmployeeOrder[]} workOrders={workOrders as unknown as PlanWork[]} tasks={tasks} snapshot={supplySnapshot} error={supplyError} onNavigate={goTo} onOpenOrder={openOrderJourney} onPlanAction={reviewSupplyAction} onRefresh={() => void refresh()} updatedAt={workspaceUpdatedAt} refreshing={refreshing}/>}
           {module === "pos" && <div className="split-grid"><section className="panel"><div className="panel-heading"><div><h2>New sale</h2><p>Scan a printed barcode or add products by name.</p></div></div><label>Storefront<select value={selectedLocation} onChange={(e) => setSelectedLocation(e.target.value)}>{locations.filter((row) => row.location_type === "storefront").map((row) => <option key={row.id} value={row.id}>{row.name} · {(row.tax_rate*100).toFixed(2)}% tax</option>)}</select></label><label>Scan barcode<input value={barcode} onChange={(e) => setBarcode(e.target.value)} onKeyDown={(e) => { if(e.key==="Enter"){e.preventDefault();void scanBarcode(barcode).catch(()=>{});} }} placeholder="Scan or enter barcode, then press Enter" /></label><div className="workspace-tools"><BarcodeScanner onScan={scanBarcode} title="Scan to add to sale" buttonLabel="Scan with camera"/><select aria-label="Filter products by bike" value={posBikeFilter} onChange={(e)=>setPosBikeFilter(e.target.value)}><option value="">All bike types</option>{items.filter((item)=>item.item_type==="bike").map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></div><div className="product-grid">{posItems.map((item) => <button className="product-card" key={item.id} onClick={() => setCart((current) => ({...current,[item.id]:(current[item.id]??0)+1}))}><span>{item.name}</span><strong>{money(item.sale_price)}</strong><small>{item.sku}</small></button>)}</div></section><section className="panel"><h2>Current cart</h2>{cartRows.length ? cartRows.map((item)=><div className="cart-row" key={item.id}><span>{item.name}<small>{money(item.sale_price)} each</small></span><div><button aria-label={`Remove one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:Math.max(0,(c[item.id]??0)-1)}))}>−</button><b>{cart[item.id]}</b><button aria-label={`Add one ${item.name}`} onClick={()=>setCart((c)=>({...c,[item.id]:(c[item.id]??0)+1}))}>+</button></div></div>):<p className="muted">Add a bike to begin.</p>}<label>Customer<select value={selectedCustomer} onChange={(e)=>setSelectedCustomer(e.target.value)}><option value="">Guest sale</option>{customers.map((customer)=><option key={customer.id} value={customer.id}>{customer.name} · {customer.email}</option>)}</select></label><label>Discount code<input value={discountCode} onChange={(e)=>setDiscountCode(e.target.value.toUpperCase())} placeholder="WRIGHTISCOOL" /></label><div className="totals"><span>Subtotal</span><strong>{money(subtotal)}</strong><span>Discount</span><strong>−{money(discountPreview)}</strong><span>Tax · {((store?.tax_rate??0)*100).toFixed(2)}%</span><strong>{money((subtotal-discountPreview)*(store?.tax_rate??0))}</strong><span>Total</span><strong>{money(subtotal-discountPreview+(subtotal-discountPreview)*(store?.tax_rate??0))}</strong></div><button className="primary full" disabled={busy||!cartRows.length} onClick={()=>void runMutation(checkout)}>{busy?"Processing…":"Complete sale"}</button><p className="footnote">The {promoPercent}% code is first order only and is validated by the database at checkout.</p>{lastReceipt && <section className="pos-receipt"><h3>Receipt · Order {String(lastReceipt.order_number)}</h3><p>{String(lastReceipt.created_at)}</p>{((lastReceipt.sales_order_lines as Row[])??[]).map((line,index)=><p key={index}>{String((line.items as Row)?.name)} · {String(line.quantity)} × {money(line.unit_price)}</p>)}<div className="totals"><span>Subtotal</span><b>{money(lastReceipt.subtotal)}</b><span>Discount</span><b>−{money(lastReceipt.discount_amount)}</b><span>Tax</span><b>{money(lastReceipt.tax_amount)}</b><span>Paid</span><b>{money(lastReceipt.total)}</b></div></section>}</section></div>}
           {module === "inventory" && <>
             <section className="panel"><div className="panel-heading"><div><h2>Inventory by location</h2><p>On hand, reserved, available, and weighted average value.</p></div><button className="secondary" onClick={refresh}>Refresh</button></div><Rows rows={inventory.filter(matches)} columns={[["item_name","Item"],["location_name","Location"],["on_hand","On hand"],["reserved","Reserved"],["available","Available"],["inventory_value","Value"]]} moneyColumns={["inventory_value"]} /></section>
@@ -466,12 +501,10 @@ export default function OperationsWorkspace() {
 
       </section>
       <PurchaseOrderDocument supabase={supabase} orderId={documentOrderId} onClose={()=>setDocumentOrderId(null)} onRecorded={refresh}/>
-      <OrderJourneyDrawer feedback={notice} order={activeOrder} locations={locations} open={orderJourneyOpen} busy={busy} onClose={()=>setOrderJourneyOpen(false)} onAdvance={(id,action)=>runMutation(()=>advanceOrder(id,action))} onNavigate={module=>{setOrderJourneyOpen(false);if(module==="returns"&&activeOrder)setReturnOrder(activeOrder.id);goTo(module,module==="shipments"?activeOrder?.id:undefined);}}/>
+      <OrderJourneyDrawer feedback={notice} order={activeOrder} locations={locations} open={orderJourneyOpen} busy={busy} onClose={()=>setOrderJourneyOpen(false)} onAdvance={(id,action)=>runMutation(()=>advanceOrder(id,action))} onNavigate={module=>{setOrderJourneyOpen(false);if(module==="returns"&&activeOrder)setReturnOrder(activeOrder.id);goTo(module,module==="shipments"?activeOrder?.id:undefined);}}>{activeOrder && <ConnectedOrderSupply order={activeOrder} snapshot={supplySnapshot} error={supplyError} onPlanAction={reviewSupplyAction} onNavigate={(module,recordId) => { setOrderJourneyOpen(false); goTo(module,recordId); }}/>}</OrderJourneyDrawer>
     </main>
   );
 }
-
-function Metric({label,value,note}:{label:string;value:string;note:string}) { return <article className="metric-card"><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 
 function Rows({rows,columns,moneyColumns=[],percentColumns=[]}:{rows:Row[];columns:[string,string][];moneyColumns?:string[];percentColumns?:string[]}) {
   if(!rows.length) return <div className="empty-state">No records yet. Add a transaction to populate this view.</div>;
