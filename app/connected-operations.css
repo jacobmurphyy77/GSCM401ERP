@@ -1,0 +1,24 @@
+.ops-at-a-glance { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .8rem; margin: 1.2rem 0; }
+.ops-at-a-glance button { display: grid; gap: .5rem; padding: 1rem; border: 1px solid var(--line); background: #f8fafb; border-radius: 10px; text-align: left; color: var(--ink); }
+.ops-at-a-glance strong { font-size: 1.7rem; font-variant-numeric: tabular-nums; }
+.ops-at-a-glance span { font-size: .8rem; color: #52697b; }
+.today-priorities { display: grid; }
+.today-priorities button { display: flex; gap: 1rem; align-items: center; justify-content: space-between; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; padding: .9rem 0; }
+.today-priorities small { display: block; color: #64798a; line-height: 1.5; margin-top: .35rem; }
+.follow-order-fields { display: grid; grid-template-columns: minmax(130px,1fr) minmax(180px,2fr) auto; gap: 1rem; align-items: end; }
+.follow-order-fields button { margin-bottom: 1rem; }
+.follow-order-fields select { max-width: 100%; }
+.fulfillment-fields { display: grid; grid-template-columns: 2fr 1fr 2fr; gap: 1rem; margin-top: 1rem; }
+.fulfillment-check > summary,.connected-supply summary { cursor: pointer; font-weight: 650; color: #35556d; padding: .3rem 0; }
+.fulfillment-check[open] > summary { margin-bottom: 1rem; }
+.supply-plan { padding-top: .5rem; }
+.supply-plan .plan-answer { font-size: 1rem; font-weight: 600; line-height: 1.5; color: #304b60; }
+.supply-plan caption { text-align: left; color: #5c7180; font-size: .8rem; padding: .7rem 0; }
+.supply-plan .inline-actions { flex-wrap: wrap; margin: 1rem 0; }
+.supply-plan > small { display: block; }
+.connected-supply { padding: 1rem 0; border-bottom: 1px solid var(--line); }
+.connected-supply h3 { margin: .5rem 0; }
+.connected-work { display: flex; gap: .5rem; flex-wrap: wrap; margin: .8rem 0; }
+.connected-work button { font-size: .8rem; }
+@media(max-width:850px) { .follow-order-fields { grid-template-columns: 1fr; gap: .2rem; } .follow-order-fields button { justify-self: start; } }
+@media(max-width:600px) { .ops-at-a-glance { grid-template-columns: repeat(2,minmax(0,1fr)); } .fulfillment-fields { grid-template-columns: 1fr; gap: .2rem; } }

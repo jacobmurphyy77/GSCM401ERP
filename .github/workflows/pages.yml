@@ -35,6 +35,9 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build:pages
+      - name: Install the UI test browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:

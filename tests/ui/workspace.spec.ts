@@ -9,7 +9,7 @@ const encoded = (value: object) => Buffer.from(JSON.stringify(value)).toString("
 const fakeToken = `${encoded({ alg: "HS256", typ: "JWT" })}.${encoded({ sub: manager.id, aud: "authenticated", role: "authenticated", exp: 4102444800, iat: 1767225600 })}.MOCK-NOT-A-REAL-SIGNATURE`;
 const fakeSession = { access_token: fakeToken, refresh_token: "MOCK-REFRESH-NOT-A-CREDENTIAL", expires_in: 86400, expires_at: 4102444800, token_type: "bearer", user: manager };
 
-type WorkflowState={tables:Record<string,Row[]>;failOrders?:boolean;dispatchMissing?:boolean;mutations:string[]};
+type WorkflowState={tables:Record<string,Row[]>;failOrders?:boolean;failSupply?:boolean;dispatchMissing?:boolean;mutations:string[]};
 async function setup(page: Page, authenticated = true, pos?: { calls: number }, workflow?:WorkflowState) {
   const tables=workflow?.tables??data;
   const unexpected: string[] = [];
@@ -28,6 +28,16 @@ async function setup(page: Page, authenticated = true, pos?: { calls: number }, 
     if (request.method() === "OPTIONS") return route.fulfill({ status: 200, headers, body: "{}" });
     if (url.pathname.startsWith("/auth/v1/user")) return route.fulfill({ status: 200, headers, body: JSON.stringify(manager) });
     if (url.pathname.startsWith("/auth/v1/token")) return route.fulfill({ status: 200, headers, body: JSON.stringify(fakeSession) });
+    if (url.pathname === '/rest/v1/rpc/fulfillment_snapshot') {
+      if (workflow?.failSupply) return route.fulfill({status:400,headers,body:JSON.stringify({message:'Supply check temporarily unavailable'})});
+      const snapshot = { as_of: new Date().toISOString(), items: tables.items, locations: tables.locations, inventory: tables.inventory,
+        bom: tables.bom_lines, links: tables.order_work_links ?? [],
+        purchase_orders: tables.purchase_orders.map(purchase => ({...purchase, lines: tables.purchase_order_lines.filter(line => line.purchase_order_id === purchase.id)})),
+        production_orders: tables.production_orders.map(work => ({...work,components_issued:true})),
+        demand: tables.sales_orders.filter(order => order.payment_status === 'paid' && ['confirmed','fulfilled'].includes(String(order.status))).flatMap(order => ((order.sales_order_lines ?? tables.sales_order_lines.filter(line => line.order_id === order.id)) as Row[]).map(line => ({...line,order_id:order.id,location_id:order.location_id}))),
+      };
+      return route.fulfill({status:200,headers,body:JSON.stringify(snapshot)});
+    }
     if (url.pathname === "/functions/v1/manage-employees") {
       const body = request.postDataJSON();
       if (body.action !== "list") { unexpected.push(`Mock rejected employee mutation ${body.action}`); return route.fulfill({ status: 400, headers, body: JSON.stringify({ error: "UI fixture does not create accounts" }) }); }
@@ -101,9 +111,53 @@ async function employee(page: Page, pos?: { calls: number }) {
   const unexpected = await setup(page, true, pos);
   await page.goto("/GSCM401ERP/employee/");
   await expect(page.getByRole("heading", { name: "Good day, team" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "From customer demand to pickup" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What needs attention?" })).toBeVisible();
   return unexpected;
 }
+
+test('simple operations overview follows an order and live planning drafts work without posting it', async ({page}, testInfo) => {
+  const tables = structuredClone(data);
+  tables.inventory = tables.inventory.map(stock => ({...stock,on_hand:0,reserved:0}));
+  tables.production_orders = [];
+  tables.purchase_orders = [];
+  for (const order of tables.sales_orders) if (order.status === 'confirmed') for (const line of order.sales_order_lines as Row[]) line.reserved_quantity = 0;
+  const workflow: WorkflowState = {tables,mutations:[]};
+  const errors: string[] = [];
+  page.on('pageerror', failure => errors.push(failure.message));
+  const unexpected = await setup(page,true,undefined,workflow);
+  await page.goto('/GSCM401ERP/employee/');
+  await expect(page.getByRole('heading',{name:'What needs attention?'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Follow one order'})).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('connected-overview.png'),fullPage:true});
+  await page.getByText('Can we fulfill a new request?',{exact:true}).click();
+  await page.getByLabel('Quantity',{exact:true}).fill('50');
+  await expect(page.getByText('Some components need purchasing.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('table',{name:'Components for the remaining demand'})).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('live-fulfillment-check.png'),fullPage:true});
+  const inputValue = await page.getByLabel('Quantity',{exact:true}).inputValue();
+  tables.inventory = tables.inventory.map(stock => ({...stock,on_hand:100000,reserved:0}));
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(page.getByText('Finished stock covers the request.',{exact:true})).toBeVisible();
+  expect(await page.getByLabel('Quantity',{exact:true}).inputValue()).toBe(inputValue);
+  workflow.failSupply = true;
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(page.getByText(/Showing the last successful supply check/)).toBeVisible();
+  workflow.failSupply = false;
+  tables.inventory = tables.inventory.map(stock => ({...stock,on_hand:0,reserved:0}));
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(page.getByText('Some components need purchasing.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Follow this order →',exact:true}).click();
+  const journey = page.getByRole('dialog');
+  await expect(journey.getByRole('heading',{name:'How the business supports this order'})).toBeVisible();
+  await journey.getByText('Check this order’s remaining supply',{exact:true}).click();
+  await expect(journey.getByRole('button',{name:'Review purchase →'}).first()).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('connected-order-journey.png'),fullPage:true});
+  await journey.getByRole('button',{name:'Review purchase →'}).first().click();
+  await expect(page.getByRole('region',{name:'Linked work draft'})).toBeVisible();
+  await expect(page.getByRole('region',{name:'Current order handoff'})).toBeVisible();
+  expect(workflow.mutations).toEqual([]);
+  expect(unexpected).toEqual([]); expect(errors).toEqual([]);
+});
 
 test("employee task queues, generated labels, inventory scanner, reports and manager form", async ({ page }) => {
   const errors: string[] = [];
@@ -124,7 +178,7 @@ test("employee task queues, generated labels, inventory scanner, reports and man
   const checkbox = await labels.locator('.barcode-item-picker input[type="checkbox"]').first().boundingBox();
   expect(checkbox?.width).toBeLessThanOrEqual(20);
   expect(checkbox?.height).toBeLessThanOrEqual(20);
-  await page.screenshot({ path: "/workspace/shared/mock-barcode-labels-desktop.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-barcode-labels-desktop.png'), fullPage: true });
   await labels.getByRole("button", { name: /^Close / }).click();
   await page.getByRole("button", { name: "Inventory", exact: true }).click();
   await page.getByRole("button", { name: "Scan barcode", exact: true }).click();
@@ -148,12 +202,12 @@ test("employee task queues, generated labels, inventory scanner, reports and man
   await expect(page.getByRole("heading", { name: "Inventory value by location" })).toBeVisible();
   await page.locator(".report-filter-panel").getByRole("combobox", { name: "Location", exact: true }).selectOption({ label: "Logan Warehouse" });
   await expect(page.locator(".report-location-bars")).toContainText("Logan Warehouse");
-  await page.screenshot({ path: "/workspace/shared/mock-reports-desktop.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-reports-desktop.png'), fullPage: true });
   await page.getByRole("button", { name: "Team access", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Create an employee login" })).toBeVisible();
   await expect(page.getByLabel("Full name", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create employee account", exact: true })).toBeEnabled();
-  await page.screenshot({ path: "/workspace/shared/mock-manager-users-desktop.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-manager-users-desktop.png'), fullPage: true });
   expect(errors).toEqual([]);
   expect(unexpected).toEqual([]);
 });
@@ -181,7 +235,7 @@ test("customer chooses compatible parts and sees the stored paid order journey",
   await expect(page.getByRole("button", { name: "Choose bike fit first" })).toBeDisabled();
   await page.getByLabel("Choose bike fit").selectOption(String(mountain.id));
   await expect(page.getByRole("dialog", { name: "Trail Support Saddle", exact: true }).locator('.detail-price')).toHaveText('$46.46');
-  await page.screenshot({ path: "/workspace/shared/mock-storefront-fit-desktop.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-storefront-fit-desktop.png'), fullPage: true });
   await page.getByRole("dialog").getByRole("button", { name: "Add to bag", exact: true }).click();
   bag=page.getByRole('dialog',{name:'Your bag',exact:true});
   await expect(bag.locator('.retail-cart-item')).toHaveCount(2);
@@ -197,7 +251,7 @@ test("customer chooses compatible parts and sees the stored paid order journey",
   await expect(account.getByRole("region", { name: `Order ${fixture.customerOrderNumber} fulfillment progress` })).toBeVisible();
   await expect(account.getByRole("list", { name: "Order milestones" })).toBeVisible();
   await expect(account.getByText("Transfer to the Logan pickup store recorded", { exact: true })).toBeVisible();
-  await page.screenshot({ path: "/workspace/shared/mock-customer-tracking-desktop.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-customer-tracking-desktop.png'), fullPage: true });
   expect(unexpected).toEqual([]);
 });
 
@@ -205,11 +259,11 @@ test("employee and customer layouts remain usable at 720px", async ({ page }) =>
   await page.setViewportSize({ width: 720, height: 1000 });
   await employee(page);
   await expect(page.getByRole("button", { name: "Sales orders", exact: true })).toBeVisible();
-  await page.screenshot({ path: "/workspace/shared/mock-employee-720.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-employee-720.png'), fullPage: true });
   await page.goto("/GSCM401ERP/");
   await expect(page.getByRole("button", { name: "My account and orders" })).toBeVisible();
   await expect(page.locator("body")).toHaveJSProperty("scrollWidth", 720);
-  await page.screenshot({ path: "/workspace/shared/mock-storefront-720.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('mock-storefront-720.png'), fullPage: true });
 });
 
 
@@ -230,7 +284,7 @@ test("two rapid POS submits create only one mocked sale and display its stored r
   await expect(page.locator(".pos-receipt")).toContainText("Paid");
   expect(pos.calls).toBe(1);
   expect(unexpected).toEqual([]);
-  await page.locator(".pos-receipt").screenshot({ path: "/workspace/shared/mock-pos-receipt.png" });
+  await page.locator(".pos-receipt").screenshot({ path: test.info().outputPath('mock-pos-receipt.png') });
 });
 
 test('PO documents download without claiming delivery; explicit sending confirmation is stored',async({page})=>{
@@ -245,7 +299,7 @@ test('PO documents download without claiming delivery; explicit sending confirma
   await expect(dialog.getByRole('button',{name:'Record confirmed sending',exact:true})).toBeDisabled();
   const downloadEvent=page.waitForEvent('download');await dialog.getByRole('button',{name:'Download PO document',exact:true}).click();
   const download=await downloadEvent;expect(download.suggestedFilename()).toBe('Wasatch-PO-1.html');
-  await download.saveAs('/workspace/shared/mock-purchase-order.html');
+  await download.saveAs(test.info().outputPath('mock-purchase-order.html'));
   expect(workflow.mutations).toEqual([]);expect(workflow.tables.purchase_order_dispatches).toEqual([]);
   await expect(dialog.getByText('No confirmed sending has been recorded.',{exact:false})).toBeVisible();
   await expect(dialog.getByText('Documents and email drafts are available.',{exact:false})).toBeVisible();
@@ -258,7 +312,7 @@ test('PO documents download without claiming delivery; explicit sending confirma
   await expect(dialog.locator('.po-dispatch-history')).toContainText('fixture.supplier@example.test');
   expect(workflow.mutations).toEqual(['record_purchase_order_dispatch']);
   expect(workflow.tables.purchase_order_dispatches).toHaveLength(1);
-  await page.screenshot({path:'/workspace/shared/mock-po-document-sending.png',fullPage:true});
+  await page.screenshot({path:test.info().outputPath('mock-po-document-sending.png'),fullPage:true});
   expect(unexpected).toEqual([]);
 });
 
@@ -303,8 +357,8 @@ test('employee handoffs remain visible and a customer journey refreshes through 
     workflow.failOrders=true;await customer.clock.fastForward(5500);
     await expect(account.getByRole('alert')).toContainText('retry automatically');await expect(route).toHaveAttribute('data-stage','complete');
     workflow.failOrders=false;await customer.clock.fastForward(5500);await expect(account.getByRole('alert')).toHaveCount(0);
-    await customer.screenshot({path:'/workspace/shared/mock-customer-live-journey.png',fullPage:true});
-    await page.screenshot({path:'/workspace/shared/mock-persistent-order-history.png',fullPage:true});
+    await customer.screenshot({path:test.info().outputPath('mock-customer-live-journey.png'),fullPage:true});
+    await page.screenshot({path:test.info().outputPath('mock-persistent-order-history.png'),fullPage:true});
     expect(workflow.mutations).toEqual(['fulfill_sales_order','update_demo_shipment','update_demo_shipment','advance_order_fulfillment','advance_order_fulfillment']);
     expect(employeeUnexpected).toEqual([]);expect(customerUnexpected).toEqual([]);
   }finally{await customerContext.close();}

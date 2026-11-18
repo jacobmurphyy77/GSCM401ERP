@@ -6,6 +6,8 @@ A demo ERP foundation for a fictional bike retailer and assembler. It is built w
 
 **Develop the app:** Start with [the developer setup and publishing guide](CONTRIBUTING.md). Editable source lives on `main`; reviewed changes merged into `main` are checked, built and published automatically by GitHub Actions. Supabase remains the shared database and authentication service. Both providers' free plans have usage limits.
 
+**Explain the connected ERP:** Employee Overview now brings together current priorities, one followed order, and an expandable live fulfillment check. See [Connected operations](docs/CONNECTED-OPERATIONS.md) for the simple presentation flow, planning assumptions, and additive database migration 008.
+
 ## Customer store and employee workspace
 
 The homepage is the public bike storefront. Visitors can browse bike images, select a pickup store, check live availability, and build a saved bag before signing in. Customer accounts can review their own orders and shipment timelines. The charcoal, white, and muted-blue brand includes an SVG mountain-and-chain logo; generated bike images are labeled as illustrative.
