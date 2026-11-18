@@ -1,0 +1,348 @@
+"use client";
+
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { createClient } from "@/src/lib/supabase/client";
+import { availableStock, BomLine, calculateCart, Cart, CatalogItem, parseSavedCart, PickupLocation, productPresentation, retailStockLocation, Stock, componentFamily, partFamilyLabels, partCollections, retailParts } from "@/src/lib/storefront";
+
+import { cancelOrderCheckout, cartMatchesOrder, checkoutAttempt, checkoutFingerprint, CheckoutReply, orderCheckoutRequest } from "@/src/lib/checkout";
+
+const checkoutFunction = process.env.NEXT_PUBLIC_CHECKOUT_FUNCTION || "create-checkout-session";
+
+export type Shipment = { id: string; status: string; tracking_code: string; estimated_at: string | null; updated_at?: string | null; shipment_events: { status: string; note: string; occurred_at: string }[] };
+export type CustomerOrder = {
+  id: string; order_number: number; status: string; payment_status: string; is_demo_payment: boolean; subtotal: number; discount_amount: number; tax_amount: number; total: number; requested_at: string; pickup?: boolean; fulfilled_at?: string | null;
+  estimated_available_at: string | null; location_id: string; discount_code: string | null; checkout_request_id: string | null; stripe_checkout_session_id: string | null; shipments: Shipment | Shipment[] | null;
+  sales_order_lines: { item_id: string; quantity: number; unit_price: number; reserved_quantity?: number; fulfilled_quantity?: number; items: { name: string } | null }[];
+};
+type Promotion = { code: string; percent_off: number; first_order_only: boolean };
+export const statusText = (value: string) => value.replaceAll("_", " ");
+export const dateText = (value: string) => new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+export function useStorefront() {
+  const supabase = useMemo(() => createClient(), []);
+  const [items, setItems] = useState<CatalogItem[]>([]);
+  const [locations, setLocations] = useState<PickupLocation[]>([]);
+  const [allLocations, setAllLocations] = useState<PickupLocation[]>([]);
+  const [bom, setBom] = useState<BomLine[]>([]);
+  const [stock, setStock] = useState<Stock[]>([]);
+  const [promotion, setPromotion] = useState<Promotion | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState("");
+  const [category, setCategory] = useState("All bikes");
+  const [selectedPartsBike, setSelectedPartsBike] = useState("");
+  const [selectedPartFamily, setSelectedPartFamily] = useState("");
+  const [orderUpdatesConnected, setOrderUpdatesConnected] = useState(false);
+  const [cart, setCart] = useState<Cart>({});
+  const [cartRestored, setCartRestored] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [discountCode, setDiscountCode] = useState("");
+  const [appliedCode, setAppliedCode] = useState("");
+  const [cartMessage, setCartMessage] = useState("");
+  const [checkoutRecovery, setCheckoutRecovery] = useState(false);
+  const [detail, setDetail] = useState<CatalogItem | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [accountMessage, setAccountMessage] = useState("");
+  const [orders, setOrders] = useState<CustomerOrder[]>([]);
+  const [paidOrders, setPaidOrders] = useState<number | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
+  const [authIntent, setAuthIntent] = useState<"account" | "checkout">("account");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const checkoutInProgress = useRef(false);
+  const pendingAttempt = useRef<string | null>(null);
+  const accountRequest = useRef(0);
+  const accountUserId = session?.user.id;
+  const invalidateAccount=useCallback(()=>{accountRequest.current++;},[]);
+
+  function clearCheckoutAttempt(requestId?: string | null) {
+    if (requestId) {
+      try {
+        const saved = pendingAttempt.current ?? localStorage.getItem("wcw-checkout-attempt");
+        if (!saved || JSON.parse(saved).requestId !== requestId) return;
+      } catch { return; }
+    }
+    pendingAttempt.current = null;
+    try { localStorage.removeItem("wcw-checkout-attempt"); } catch { /* Storage is optional. */ }
+  }
+
+  const refreshCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    const now = new Date().toISOString();
+    const [products, stores, inventory, promo, billOfMaterials] = await Promise.all([
+      supabase.from("items").select("*").eq("active", true).in("item_type", ["bike", "component"]).order("sale_price"),
+      supabase.from("locations").select("id,name,city,postal_code,tax_rate,location_type").eq("active", true).order("name"),
+      supabase.from("inventory").select("item_id,location_id,on_hand,reserved"),
+      supabase.from("discounts").select("code,percent_off,first_order_only").eq("code", "WRIGHTISCOOL").eq("active", true).lte("starts_at", now).or(`ends_at.is.null,ends_at.gte.${now}`).maybeSingle(),
+      supabase.from("bom_lines").select("parent_item_id,component_item_id,quantity_per"),
+    ]);
+    setCatalogError(Boolean(products.error || stores.error || inventory.error || billOfMaterials.error));
+    if (products.data) setItems(products.data as CatalogItem[]);
+    if (stores.data) {
+      const rows = stores.data as PickupLocation[];
+      const storefronts = rows.filter((row) => row.location_type === "storefront");
+      setAllLocations(rows); setLocations(storefronts);
+      setSelectedLocation((current) => storefronts.some((row) => row.id === current) ? current : storefronts[0]?.id ?? "");
+    }
+    if (inventory.data) setStock(inventory.data as Stock[]);
+    if (billOfMaterials.data) setBom(billOfMaterials.data as BomLine[]);
+    setPromotion(promo.data as Promotion | null);
+    setCatalogLoading(false);
+  }, [supabase]);
+
+  const loadAccount = useCallback(async (userId: string, silent = false) => {
+    const request = ++accountRequest.current;
+    if (!silent) setAccountLoading(true);
+    try {
+    const [profile, customerOrders, paid] = await Promise.all([
+      supabase.from("profiles").select("role").eq("id", userId).single(),
+      supabase.from("sales_orders").select("id,order_number,status,payment_status,is_demo_payment,subtotal,discount_amount,tax_amount,total,location_id,discount_code,checkout_request_id,stripe_checkout_session_id,requested_at,fulfilled_at,pickup,estimated_available_at,sales_order_lines(item_id,quantity,unit_price,reserved_quantity,fulfilled_quantity,items(name)),shipments(id,status,tracking_code,estimated_at,updated_at,shipment_events(status,note,occurred_at))").eq("created_by", userId).order("created_at", { ascending: false }).limit(100),
+      supabase.from("sales_orders").select("id", { count: "exact", head: true }).eq("created_by", userId).eq("payment_status", "paid"),
+    ]);
+    if (request !== accountRequest.current) return;
+    if (profile.data) setRole(String(profile.data.role));
+    if (customerOrders.data) setOrders(customerOrders.data as unknown as CustomerOrder[]);
+    setPaidOrders(paid.error ? null : paid.count ?? 0);
+    setAccountError(profile.error || customerOrders.error || paid.error ? "We couldn’t refresh all order details. Your last loaded updates remain visible; we will retry automatically." : "");
+    } catch {
+      if (request === accountRequest.current) setAccountError("Order updates could not refresh. Your last loaded journey remains visible; we will retry automatically.");
+    } finally { if (request === accountRequest.current) setAccountLoading(false); }
+  }, [supabase]);
+
+  useEffect(() => {
+    void refreshCatalog();
+    const channel = supabase.channel("storefront-inventory")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory" }, () => { void refreshCatalog(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "items" }, () => { void refreshCatalog(); }).subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [refreshCatalog, supabase]);
+
+  useEffect(() => {
+    try { setCart(parseSavedCart(localStorage.getItem("wcw-cart"))); } catch { /* Storage is optional. */ }
+    setCartRestored(true);
+    void supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => { setSession(nextSession); setAuthReady(true); });
+    return () => data.subscription.unsubscribe();
+  }, [supabase]);
+
+  useEffect(() => {
+    if (cartRestored) { try { localStorage.setItem("wcw-cart", JSON.stringify(cart)); } catch { /* Storage is optional. */ } }
+  }, [cart, cartRestored]);
+
+  useEffect(() => {
+    if (!accountUserId) { accountRequest.current++; setRole(null); setOrders([]); setPaidOrders(null); setOrderUpdatesConnected(false); return; }
+    setOrderUpdatesConnected(false);
+    void loadAccount(accountUserId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void loadAccount(accountUserId, true); }, 150); };
+    const channel = supabase.channel(`customer-orders-${accountUserId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales_orders", filter: `created_by=eq.${accountUserId}` }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales_order_lines" }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, schedule)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipment_events" }, schedule).subscribe((status) => { setOrderUpdatesConnected(status === "SUBSCRIBED"); if (status === "SUBSCRIBED") schedule(); });
+    return () => { invalidateAccount(); clearTimeout(timer); void supabase.removeChannel(channel); };
+  }, [accountUserId, loadAccount, supabase, invalidateAccount]);
+
+  useEffect(() => {
+    if (!accountUserId) return;
+    const refreshVisible = () => { if (document.visibilityState === "visible") { void loadAccount(accountUserId, true); void refreshCatalog(); } };
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadAccount(accountUserId, true); }, accountOpen ? 5000 : 20000);
+    return () => { window.removeEventListener("focus", refreshVisible); document.removeEventListener("visibilitychange", refreshVisible); window.clearInterval(timer); };
+  }, [accountUserId, accountOpen, loadAccount, refreshCatalog]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const query = new URLSearchParams(window.location.search);
+    const checkout = query.get("checkout");
+    if (!checkout) return;
+    if (!session) { setNotice("Sign in to review your checkout and order status."); return; }
+    let active = true;
+    const sessionId = query.get("session_id");
+    function cleanReturnUrl() {
+      query.delete("checkout"); query.delete("order"); query.delete("order_id"); query.delete("session_id");
+      window.history.replaceState({}, "", `${window.location.pathname}${query.size ? `?${query.toString()}` : ""}`);
+    }
+    async function finishCheckout() {
+      if (checkout === "success") {
+        setAccountOpen(true); setNotice("Verifying your demo payment with Stripe…");
+        const { data, error } = await supabase.functions.invoke("verify-checkout-session", { body: { session_id: sessionId } });
+        if (!active) return;
+        if (!error && data?.paid) {
+          setCart((current) => cartMatchesOrder(current, data.lines ?? []) ? {} : current); clearCheckoutAttempt(); cleanReturnUrl();
+          setNotice(`Demo payment confirmed for order ${data.order_number}. No real money was charged.`);
+        } else setNotice("Payment is being verified. Check My orders or reload this page before attempting another payment.");
+      } else if (checkout === "cancelled") {
+        setCartOpen(true); setCartMessage("Checking your cancelled checkout…");
+        const { data, error } = await supabase.functions.invoke("cancel-checkout-session", { body: { order_id: query.get("order_id"), session_id: sessionId } });
+        if (!active) return;
+        if (!error && data?.paid) {
+          setCart({}); clearCheckoutAttempt(); setCartOpen(false); setAccountOpen(true);
+          setNotice("Your demo payment was already completed. View your confirmed order below."); cleanReturnUrl();
+        } else if (!error && data?.cancelled) {
+          clearCheckoutAttempt(); cleanReturnUrl();
+          setCartMessage("Checkout cancelled and reserved stock released. Your bag is still here.");
+        } else setCartMessage("Your bag is saved. We couldn’t confirm cancellation; refresh your orders before paying again.");
+      }
+      await loadAccount(session!.user.id); await refreshCatalog();
+    }
+    void finishCheckout().catch(() => { if (active) setNotice("We couldn’t verify checkout. Refresh your orders before paying again."); });
+    return () => { active = false; };
+  }, [authReady, session, loadAccount, refreshCatalog, supabase]);
+
+  const store = locations.find((location) => location.id === selectedLocation);
+  const eligiblePromotion = Boolean(promotion && (!promotion.first_order_only || (session && paidOrders === 0)));
+  const discountPercent = promotion && appliedCode === promotion.code && eligiblePromotion ? Number(promotion.percent_off) : 0;
+  const totals = calculateCart(items, cart, discountPercent, Number(store?.tax_rate ?? 0));
+  const bikes = items.filter((item) => item.item_type === "bike");
+  const parts = retailParts(items);
+  const hasSpecificParts = parts.some((item) => Boolean(item.compatible_bike_id));
+  const partFamilies = Object.keys(partFamilyLabels).filter((family) => parts.some((item) => componentFamily(item) === family));
+  const visibleParts = partCollections(items, selectedPartFamily);
+  const categories = ["All bikes", ...Array.from(new Set(bikes.map((item) => productPresentation(item).category)))];
+  const visibleItems = category === "All bikes" ? bikes : bikes.filter((item) => productPresentation(item).category === category);
+
+  function openProduct(item: CatalogItem) { setSelectedPartsBike(""); setDetail(item); }
+  function addToCart(item: CatalogItem) { if (item.compatible_bike_id && selectedPartsBike !== item.compatible_bike_id) { openProduct(item); setNotice("Choose the bike this part needs to fit before adding it to your bag."); return; } if (Number(item.sale_price) <= 0) { setNotice("This product is not available to order yet."); return; } setCart((current) => ({ ...current, [item.id]: (current[item.id] ?? 0) + 1 })); setNotice(`${item.name} added to your bag.`); }
+  function changeQuantity(itemId: string, quantity: number) { setCart((current) => { const next = { ...current }; if (quantity > 0) next[itemId] = quantity; else delete next[itemId]; return next; }); }
+  function openAuth(intent: "account" | "checkout" = "account") { setAuthIntent(intent); setAuthMode("login"); setAuthError(""); setAuthMessage(""); setCartOpen(false); setAccountOpen(false); }
+
+  async function authenticate(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setAuthError(""); setAuthMessage("");
+    try {
+      const result = authMode === "signup"
+        ? await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: `${window.location.origin}${window.location.pathname}`, data: { display_name: email.trim().split("@")[0] } } })
+        : await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (result.error) { setAuthError(result.error.message); return; }
+      setPassword("");
+      if (!result.data.session) { setAuthMessage("Check your email to confirm your account, then come back and sign in. Your bag is saved."); setAuthMode("login"); return; }
+      setSession(result.data.session); setAuthMode(null);
+      if (authIntent === "checkout") setCartOpen(true); else setAccountOpen(true);
+    } catch { setAuthError("We couldn’t connect to sign-in. Please try again."); }
+    finally { setBusy(false); }
+  }
+
+  function applyDiscount(event: FormEvent) {
+    event.preventDefault(); const code = discountCode.trim().toUpperCase();
+    if (!promotion || code !== promotion.code) { setAppliedCode(""); setCartMessage("That discount code is not currently available."); return; }
+    setAppliedCode(code);
+    if (!session) { setCartMessage("Code saved. Sign in so we can check your first-order eligibility."); return; }
+    if (paidOrders === null) { setCartMessage("We’re still checking your order history. Refresh your account before payment."); return; }
+    setCartMessage(eligiblePromotion ? `${promotion.percent_off}% discount applied before sales tax.` : "This code is available on your first paid order only.");
+  }
+
+  function showUnfinishedOrders() {
+    setCartOpen(false); setAccountOpen(true); setAccountMessage("Your earlier checkout is still open. Resume it, or cancel it before placing your new order. Your current bag stays saved.");
+    if (session) void loadAccount(session.user.id);
+  }
+
+  async function invokeCheckout(name: string, body: object): Promise<CheckoutReply> {
+    const { data, error } = await supabase.functions.invoke(name, { body });
+    if (error) {
+      let message = "We couldn’t update this checkout. Please refresh your orders and try again.";
+      if (error.context instanceof Response) {
+        try { const failure = await error.context.json(); message = failure.error ?? failure.message ?? message; } catch { /* Use the fallback. */ }
+      }
+      throw new Error(message);
+    }
+    if (!data || data.error) throw new Error(data?.error ?? "Checkout did not return a result. Please refresh your orders.");
+    return data;
+  }
+
+  async function checkout() {
+    if (!session) { openAuth("checkout"); return; }
+    if (checkoutInProgress.current) return;
+    if (!store || !totals.rows.length || catalogError) { setCartMessage("Choose a pickup store and add a product before checkout."); return; }
+    checkoutInProgress.current = true; setBusy(true); setCartMessage(""); setCheckoutRecovery(false);
+    try {
+      const lines = totals.rows.map((item) => ({ item_id: item.id, quantity: cart[item.id] }));
+      const code = appliedCode && discountPercent ? appliedCode : null;
+      let previous = pendingAttempt.current;
+      try { previous ??= localStorage.getItem("wcw-checkout-attempt"); } catch { /* Storage is optional. */ }
+      const attempt = checkoutAttempt(previous, checkoutFingerprint(session.user.id, store.id, lines, code), () => crypto.randomUUID());
+      pendingAttempt.current = JSON.stringify(attempt);
+      try { localStorage.setItem("wcw-checkout-attempt", pendingAttempt.current); } catch { /* Storage is optional. */ }
+      const { data, error } = await supabase.functions.invoke(checkoutFunction, { body: { request_id: attempt.requestId, location_id: store.id, lines, discount_code: code } });
+      let failure = data;
+      if (error?.context instanceof Response) { try { failure = await error.context.json(); } catch { /* Use fallback message. */ } }
+      if (error || !data?.url) {
+        if (failure?.reset_request) clearCheckoutAttempt();
+        if (String(failure?.error ?? "").includes("unfinished checkout")) {
+          setCheckoutRecovery(true);
+          setCartMessage("An earlier unpaid order is holding your first-order discount. View unfinished orders to resume or cancel it, then use this bag."); return;
+        }
+        setCartMessage(failure?.error ?? "Secure payment is not available yet. Your bag is saved—please try again later."); return;
+      }
+      const destination = new URL(String(data.url));
+      const isStripe = destination.hostname === "checkout.stripe.com";
+      const isReturn = destination.origin === window.location.origin && destination.pathname === window.location.pathname;
+      if (destination.protocol !== "https:" || (!isStripe && !isReturn)) { setCartMessage("We couldn’t open secure checkout. Please try again."); return; }
+      window.location.assign(destination.href);
+    } catch { setCartMessage("We couldn’t connect to payment. Your bag is still saved."); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
+  }
+
+  async function resumeOrder(order: CustomerOrder) {
+    if (!order.checkout_request_id || checkoutInProgress.current) return;
+    checkoutInProgress.current = true; setBusy(true); setAccountError(""); setAccountMessage("");
+    try {
+      const data = await invokeCheckout(checkoutFunction, orderCheckoutRequest(order));
+      if (!data.url) throw new Error("This checkout could not be reopened. Refresh your orders and try again.");
+      const destination = new URL(data.url);
+      if (destination.protocol !== "https:" || (destination.hostname !== "checkout.stripe.com" && !(destination.origin === window.location.origin && destination.pathname === window.location.pathname))) throw new Error("Invalid checkout URL");
+      window.location.assign(destination.href);
+    } catch (error) { setAccountError(error instanceof Error ? error.message : "Couldn’t reconnect to Stripe. Please refresh your orders before paying again."); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
+  }
+
+  async function cancelOrder(order: CustomerOrder) {
+    if (!session || checkoutInProgress.current) return;
+    checkoutInProgress.current = true; setBusy(true); setAccountError(""); setAccountMessage("Checking the payment session before cancelling…");
+    try {
+      const result = await cancelOrderCheckout(order,
+        (body) => invokeCheckout(checkoutFunction, body),
+        (body) => invokeCheckout("cancel-checkout-session", body));
+      if (result.cancelled) {
+        clearCheckoutAttempt(order.checkout_request_id); setCheckoutRecovery(false); setCartMessage("");
+        setAccountMessage(`Order ${order.order_number} cancelled and its reserved stock released. Your current bag is saved; you can try checkout again.`);
+      } else setAccountMessage(`Order ${order.order_number} was already paid. It has been confirmed instead of cancelled.`);
+      await loadAccount(session.user.id); await refreshCatalog();
+    } catch (error) { setAccountMessage(""); setAccountError(error instanceof Error ? error.message : "Cancellation could not be confirmed. Refresh your orders before paying again."); }
+    finally { checkoutInProgress.current = false; setBusy(false); }
+  }
+
+  async function signOut() {
+    const { error } = await supabase.auth.signOut();
+    if (error) { setAccountError("We couldn’t sign you out. Please try again."); return; }
+    setAccountOpen(false); setAccountMessage(""); setCheckoutRecovery(false); setNotice("You’re signed out.");
+  }
+
+  function availability(item: CatalogItem) {
+    if (catalogError) return "Availability temporarily unavailable";
+    const sourceLocation = retailStockLocation(item, store, allLocations);
+    if (!sourceLocation) return "Not available at this pickup store";
+    const available = availableStock(stock, item.id, sourceLocation);
+    if (available > 0) return `${available} available in ${store?.city ?? "your pickup store"}`;
+    const estimate = new Date(); estimate.setDate(estimate.getDate() + Number(item.lead_time_days));
+    return `Backorder · estimated ${dateText(estimate.toISOString())}`;
+  }
+
+  return { items, bikes, parts, hasSpecificParts, partFamilies, visibleParts, selectedPartsBike, setSelectedPartsBike, selectedPartFamily, setSelectedPartFamily, orderUpdatesConnected, bom, allLocations, locations, stock, promotion, catalogLoading, catalogError, selectedLocation, setSelectedLocation, category, setCategory,
+    cart, cartOpen, setCartOpen, discountCode, setDiscountCode, appliedCode, discountPercent, cartMessage, detail, setDetail, session, authReady, role,
+    accountOpen, setAccountOpen, accountLoading, accountError, accountMessage, checkoutRecovery, orders, authMode, setAuthMode, email, setEmail, password, setPassword, authMessage, authError,
+    setAuthError, setAuthMessage, busy, notice, setNotice, store, totals, categories, visibleItems, refreshCatalog, loadAccount, openProduct, addToCart, changeQuantity,
+    openAuth, authenticate, applyDiscount, checkout, resumeOrder, cancelOrder, showUnfinishedOrders, signOut, availability };
+}
+
+export type StorefrontModel = ReturnType<typeof useStorefront>;

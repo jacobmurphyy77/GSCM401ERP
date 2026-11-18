@@ -1,0 +1,118 @@
+"use client";
+
+import Image from "next/image";
+import { useState } from "react";
+import Link from "next/link";
+import { assetPath, isEmployeeRole, money, productPresentation, componentFamily, compatibleBikeName, partProductName, partPriceLabel, PickupLocation } from "@/src/lib/storefront";
+import { Brand } from "./brand";
+import { Icon } from "./icon";
+import { Modal } from "./modal";
+import { CustomerOrderTracking } from "./customer-order-tracking";
+import { CustomerOrder, dateText, statusText, StorefrontModel } from "./use-storefront";
+
+export function StoreDialogs({ shop }: { shop: StorefrontModel }) {
+  const { totals, cartOpen, setCartOpen, cart, locations, selectedLocation, setSelectedLocation, store, cartMessage,
+    discountCode, setDiscountCode, appliedCode, discountPercent, busy, catalogError, authReady, session, authMode, setAuthMode,
+    email, setEmail, password, setPassword, authError, authMessage, setAuthError, setAuthMessage, accountOpen, setAccountOpen,
+    accountLoading, accountError, accountMessage, checkoutRecovery, orders, role, detail, setDetail, changeQuantity, availability, openAuth } = shop;
+
+  return <>
+    <Modal title="Your bag" open={cartOpen} onClose={() => setCartOpen(false)} drawer>
+      {!totals.rows.length ? <div className="store-empty"><Icon name="bag" size={36}/><h3>A little room for adventure.</h3><p>Your bag is empty. Let’s find your next ride.</p><button className="store-button" onClick={() => { setCartOpen(false); document.getElementById("bikes")?.scrollIntoView({ behavior: "smooth" }); }}>Explore the bikes <Icon name="arrow"/></button></div> : <>
+        <p className="cart-intro">{totals.units} {totals.units === 1 ? "item" : "items"} · Pickup at your selected store</p>
+        <div className="retail-cart-items">{totals.rows.map((item) => <div className="retail-cart-item" key={item.id}>
+          <Image src={assetPath(productPresentation(item).image)} alt="" width={160} height={110} unoptimized/>
+          <div><h3>{item.name}</h3><p>{money(item.sale_price)}</p>{compatibleBikeName(item, shop.items) && <p className="cart-part-fit">Fits {compatibleBikeName(item, shop.items)}</p>}<div className="quantity-stepper"><button aria-label={`Remove one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] - 1)}>−</button><span>{cart[item.id]}</span><button aria-label={`Add one ${item.name}`} onClick={() => changeQuantity(item.id, cart[item.id] + 1)}>+</button></div></div>
+          <button className="icon-button remove-item" aria-label={`Remove ${item.name} from bag`} onClick={() => changeQuantity(item.id, 0)}><Icon name="close" size={16}/></button><small>{availability(item)}</small>
+        </div>)}</div>
+        <label className="store-field">Pickup store<select value={selectedLocation} onChange={(event) => setSelectedLocation(event.target.value)}>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <form className="discount-form" onSubmit={shop.applyDiscount}><label className="sr-only" htmlFor="store-discount">Discount code</label><input id="store-discount" value={discountCode} onChange={(event) => setDiscountCode(event.target.value.toUpperCase())} placeholder="Discount code"/><button type="submit">Apply</button></form>
+        {appliedCode && discountPercent > 0 && <p className="applied-discount"><Icon name="check" size={15}/>{appliedCode} applied · {discountPercent}% off</p>}
+        <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(totals.subtotal)}</dd></div>{totals.discount > 0 && <div className="discount-total"><dt>Discount</dt><dd>−{money(totals.discount)}</dd></div>}<div><dt>Sales tax · {(Number(store?.tax_rate ?? 0) * 100).toFixed(2)}%</dt><dd>{money(totals.tax)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(totals.total)}</dd></div></dl>
+        {cartMessage && <p className="store-message" role="status">{cartMessage}</p>}
+        {checkoutRecovery && <button className="store-button order-action-secondary" disabled={busy} onClick={shop.showUnfinishedOrders}>View unfinished orders <Icon name="arrow" size={16}/></button>}
+        <button className="store-button checkout-button" disabled={busy || catalogError || !authReady} onClick={() => void shop.checkout()}>{busy ? "Opening secure payment…" : session ? "Continue to secure payment" : "Sign in to checkout"}<Icon name="arrow"/></button>
+        <p className="cart-fineprint"><strong>Stripe sandbox demo.</strong> No real charges. Use test card 4242 4242 4242 4242, any future expiry, and any three-digit CVC.</p>
+        <p className="cart-fineprint">Your total is validated at checkout. Backordered items display an estimated availability date in your order.</p>
+      </>}
+    </Modal>
+
+    <Modal title={authMode === "signup" ? "Your next ride starts here." : "Welcome back."} open={Boolean(authMode)} onClose={() => setAuthMode(null)}>
+      <Brand/><p className="auth-dialog-description">Sign in to save pickup orders, follow updates, and shop your local store.</p>
+      <form className="store-auth-form" onSubmit={shop.authenticate}>
+        <label className="store-field">Email address<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)}/></label>
+        <label className="store-field">Password<input type="password" required minLength={authMode === "signup" ? 8 : undefined} autoComplete={authMode === "signup" ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)}/></label>
+        {authError && <p className="store-message error" role="alert">{authError}</p>}{authMessage && <p className="store-message" role="status">{authMessage}</p>}
+        <button className="store-button" disabled={busy}>{busy ? "Working…" : authMode === "signup" ? "Create customer account" : "Sign in"}<Icon name="arrow"/></button>
+      </form>
+      <p className="auth-switch">{authMode === "signup" ? "Already part of the ride?" : "New to Wasatch?"} <button onClick={() => { setAuthMode(authMode === "signup" ? "login" : "signup"); setAuthError(""); setAuthMessage(""); }}>{authMode === "signup" ? "Sign in" : "Create an account"}</button></p>
+      <Link href="/employee" className="auth-employee-link">Looking for the employee workspace? <Icon name="arrow" size={15}/></Link>
+    </Modal>
+
+    <Modal title="My account & orders" open={accountOpen} onClose={() => setAccountOpen(false)} wide>
+      {!session ? <div className="store-empty"><p>Sign in to view your orders.</p><button className="store-button" onClick={() => openAuth()}>Sign in</button></div> : <>
+        <div className="customer-account-bar"><span>{session.user.email}</span><button onClick={() => void shop.signOut()}>Sign out</button></div>
+        {isEmployeeRole(role) && <Link className="workspace-shortcut" href="/employee">Open employee workspace <Icon name="arrow" size={18}/></Link>}
+        {accountError && <p className="store-message error" role="alert">{accountError}</p>}
+        {accountMessage && <p className="store-message" role="status">{accountMessage}</p>}
+        <p className="cart-fineprint">Journeys refresh automatically every few seconds while this panel is open. Completed orders remain in your account.</p>
+        <div className="account-orders-heading"><h3>Your orders</h3><button onClick={() => void shop.loadAccount(session.user.id)} disabled={accountLoading}>{accountLoading ? "Refreshing…" : "Refresh orders"}</button></div>
+        {accountLoading && !orders.length ? <p className="store-empty">Loading your orders…</p> : !orders.length ? <div className="store-empty"><Icon name="box" size={36}/><h3>Your next adventure is waiting.</h3><p>Once you place an order, you can follow it here.</p></div> : <div className="customer-orders">{orders.map((order,index) => <OrderDetails key={order.id} initiallyOpen={index===0 || order.payment_status==="unpaid"&&order.status==="placed"} order={order} location={locations.find((location) => location.id === order.location_id)} realtimeConnected={shop.orderUpdatesConnected&&!accountError} busy={busy} onResume={() => void shop.resumeOrder(order)} onCancel={() => void shop.cancelOrder(order)}/>)}</div>}
+      </>}
+    </Modal>
+
+    <Modal title={detail ? detail.item_type === "component" && !shop.selectedPartsBike ? partProductName(detail) : detail.name : "Product details"} open={Boolean(detail)} onClose={() => setDetail(null)} wide>
+      {detail && <ProductDetails shop={shop}/>}
+    </Modal>
+  </>;
+}
+
+function OrderDetails({ order, location, realtimeConnected, busy, onResume, onCancel, initiallyOpen }: { order: CustomerOrder; location?: PickupLocation; realtimeConnected: boolean; busy: boolean; onResume: () => void; onCancel: () => void; initiallyOpen: boolean }) {
+  const [expanded,setExpanded]=useState(initiallyOpen);
+  return <details className="customer-order" open={expanded} onToggle={(event)=>setExpanded(event.currentTarget.open)}><summary><div><strong>Order {order.order_number}</strong><span>{dateText(order.requested_at)}</span></div><span className={`order-status status-${order.status}`}>{statusText(order.status)}</span><strong>{money(order.total)}</strong></summary><div className="customer-order-details"><CustomerOrderTracking order={order} location={location} realtimeConnected={realtimeConnected}/><h4>Order receipt</h4><p>Payment: <strong>{statusText(order.payment_status)}</strong>{order.is_demo_payment ? " · Stripe test payment, no real charge" : ""}</p>{order.payment_status === "unpaid" && order.status === "placed" && (order.checkout_request_id || order.stripe_checkout_session_id) && <><p>This order is still open{order.discount_code ? ` with code ${order.discount_code}` : ""}. Removing items from your bag does not cancel it.</p><div className="customer-order-actions">{order.checkout_request_id && <button className="store-button" disabled={busy} onClick={onResume}>Resume secure checkout <Icon name="arrow" size={16}/></button>}<button className="store-button order-action-secondary" disabled={busy} onClick={onCancel}>Cancel unpaid order</button></div></>}<ul>{order.sales_order_lines.map((line) => <li key={line.item_id}>{line.items?.name ?? "Bike"}<span>{line.quantity} × {money(line.unit_price)} · {money(Number(line.unit_price) * line.quantity)}</span></li>)}</ul>
+    <dl className="retail-cart-totals"><div><dt>Subtotal</dt><dd>{money(order.subtotal)}</dd></div>{Number(order.discount_amount) > 0 && <div><dt>Discount</dt><dd>−{money(order.discount_amount)}</dd></div>}<div><dt>Sales tax</dt><dd>{money(order.tax_amount)}</dd></div><div className="grand-total"><dt>Total</dt><dd>{money(order.total)}</dd></div></dl>
+
+  </div></details>;
+}
+
+function ProductDetails({ shop }: { shop: StorefrontModel }) {
+  const detail = shop.detail;
+  if (!detail) return null;
+  const family = componentFamily(detail);
+  const variants = detail.item_type === "component" && family ? shop.parts.filter((part) => componentFamily(part) === family && part.compatible_bike_id) : [];
+  const needsFit = variants.length > 0 && (!detail.compatible_bike_id || shop.selectedPartsBike !== detail.compatible_bike_id);
+  const fitName = needsFit ? null : compatibleBikeName(detail, shop.items);
+  function chooseFit(bikeId: string) {
+    shop.setSelectedPartsBike(bikeId);
+    const variant = variants.find((part) => part.compatible_bike_id === bikeId);
+    if (variant) shop.setDetail(variant);
+  }
+  return <div className="product-detail-layout">
+    <Image src={assetPath(productPresentation(detail).image)} alt={`${needsFit ? partProductName(detail) : detail.name} illustrative product image`} width={1200} height={800} unoptimized/>
+    <div><p className="store-kicker">{productPresentation(detail).category}</p><h3>{needsFit ? partProductName(detail) : detail.name}</h3>
+      {fitName && <p className="part-compatibility-label"><Icon name="check" size={14}/>Designed for {fitName}</p>}
+      <p className="detail-price" aria-live="polite">{needsFit ? partPriceLabel(variants) : Number(detail.sale_price) > 0 ? money(detail.sale_price) : "Not available to order yet"}</p>
+      {variants.length > 0 && <label className="store-field part-detail-fit">Choose bike fit<select value={needsFit ? "" : detail.compatible_bike_id ?? ""} onChange={(event) => chooseFit(event.target.value)}><option value="">Choose the bike this part is for</option>{variants.map((part) => <option key={part.id} value={part.compatible_bike_id ?? ""}>{compatibleBikeName(part, shop.items) ?? part.name} · {money(part.sale_price)}</option>)}</select></label>}
+      <p className="product-availability" aria-live="polite">{needsFit ? "Select your bike to check its price and pickup availability." : <><i/>{shop.availability(detail)}</>}</p>
+      {detail.item_type === "component" && !detail.compatible_bike_id && !variants.length && <p className="parts-fit-help">General component. Specific bike compatibility has not been recorded; confirm fit with the store.</p>}
+      <label className="store-field">Pickup store<select value={shop.selectedLocation} onChange={(event) => shop.setSelectedLocation(event.target.value)}>{shop.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+      <button className="store-button" disabled={Number(detail.sale_price) <= 0 || needsFit || shop.catalogError || !shop.store} onClick={() => { shop.addToCart(detail); shop.setDetail(null); shop.setCartOpen(true); }}>{needsFit ? "Choose bike fit first" : "Add to bag"}<Icon name="bag"/></button>
+      <small className="cart-fineprint">Product imagery is illustrative. Sales tax is calculated for the selected pickup store.</small>
+    </div>{!needsFit && <BuildConnections shop={shop}/>}
+  </div>;
+}
+
+function BuildConnections({ shop }: { shop: StorefrontModel }) {
+  const detail = shop.detail;
+  if (!detail) return null;
+  if (detail.item_type === "component") {
+    const bikes = shop.bom.filter((line) => line.component_item_id === detail.id).map((line) => shop.bikes.find((item) => item.id === line.parent_item_id)).filter((item) => Boolean(item));
+    return <section className="bom-connections"><h3>Used in our bike builds</h3><p>These relationships come from the bike’s bill of materials.</p><div className="used-in-bikes">{bikes.map((bike) => bike && <button key={bike.id} onClick={() => shop.openProduct(bike)}>{bike.name}</button>)}</div></section>;
+  }
+  const lines = shop.bom.filter((line) => line.parent_item_id === detail.id);
+  return <section className="bom-connections"><h3>Parts for this bike</h3><p>Shop the components used to build this bike. Quantities show the parts needed for a complete build.</p><div className="bom-parts">{lines.map((line) => {
+    const part = shop.parts.find((item) => item.id === line.component_item_id);
+    if (!part) return null;
+    return <button key={part.id} onClick={() => shop.openProduct(part)}><Image src={assetPath(productPresentation(part).image)} alt="" width={100} height={70} unoptimized/><span>{part.name}<small>{line.quantity_per} per bike · {Number(part.sale_price) > 0 ? money(part.sale_price) : "Pricing pending"}</small></span><Icon name="arrow" size={16}/></button>;
+  })}</div></section>;
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "wasatch-supabase": {
+      "type": "streamable-http",
+      "url": "https://mcp.supabase.com/mcp?project_ref=skfmrqrsmnsmoniyuzdq&features=database,functions,docs",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "dcr"
+            }
+          }
+        }
+      }
+    }
+  }
+}

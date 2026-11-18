@@ -1,0 +1,43 @@
+{
+  "name": "gscm401erp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:pages": "node scripts/build-pages.mjs",
+    "start": "serve out",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:storefront": "node --test tests/storefront.test.mjs",
+    "test:payments": "node --test tests/payments.test.mjs",
+    "prepare:stripe": "node scripts/prepare-stripe-dashboard.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:barcodes": "node --test tests/barcodes.test.mjs",
+    "test:operations": "node --test tests/operations*.test.mjs",
+    "prepare:operations": "node scripts/prepare-operations-release.mjs",
+    "test:ui": "playwright test"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.57.0",
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
+    "jsbarcode": "^3.12.3",
+    "next": "^15.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
+    "@playwright/test": "^1.65.1",
+    "@types/jsbarcode": "^3.11.4",
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "eslint": "^9.34.0",
+    "eslint-config-next": "^15.5.0",
+    "serve": "^14.2.8",
+    "typescript": "^5.9.2"
+  }
+}

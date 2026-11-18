@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "wasatch-erp-supabase",
+  "version": "0.1.0",
+  "description": "Private project-scoped connection to the official Supabase MCP server for the Wasatch Cycle Works ERP database and Edge Functions.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Wasatch ERP Database",
+        "shortDescription": "Wasatch ERP database tools",
+        "longDescription": "Connect your own Supabase account through OAuth to inspect and apply approved migrations and deploy Edge Functions for project skfmrqrsmnsmoniyuzdq. Uses Supabase\u2019s official hosted MCP server. Authorization and workspace policy still apply; no credentials are packaged.",
+        "category": "Developer Tools",
+        "capabilities": [],
+        "defaultPrompt": "Inspect the Wasatch ERP database and finish its prepared operations upgrade.",
+        "logo": "./assets/logo.svg",
+        "composerIcon": "./assets/logo.svg",
+        "brandColor": "#496D88"
+      }
+    }
+  }
+}
